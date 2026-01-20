@@ -1,0 +1,7 @@
+starknet_rpc_url = "http://127.0.0.1:5050"
+shielded_notes_address = "0x0"
+start_block = 0
+postgres_url = "postgres://user:password@127.0.0.1:5432/zylith"
+server_port = 8080
+finality_depth = 5
+sync_token = ""
