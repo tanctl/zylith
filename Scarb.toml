@@ -1,0 +1,23 @@
+[package]
+name = "zylith"
+version = "0.1.0"
+edition = "2023_11"
+cairo-version = "2.14.0"
+
+[dependencies]
+
+[dependencies.starknet]
+version = ">=2.14.0"
+
+[lib]
+sierra = true
+casm = true
+path = "src/lib.cairo"
+
+[[target.starknet-contract]]
+name = "zylith_contracts"
+path = "contracts/lib.cairo"
+
+[dev-dependencies]
+cairo_test = "2.14.0"
+snforge_std = "0.54.0"

@@ -1,0 +1,169 @@
+{
+  "input": {
+    "tag": "21472712069301316",
+    "merkle_root_token0": "1",
+    "merkle_root_token1": "1",
+    "merkle_root_position": "1",
+    "nullifier_position": "0",
+    "sqrt_price_start": "340282537062079388658008856451427006219",
+    "tick_start": "1",
+    "tick_lower": "1",
+    "tick_upper": "2",
+    "sqrt_ratio_lower": "340282537062079388658008856451427006219",
+    "sqrt_ratio_upper": "340282707203305384401838070806375643223",
+    "liquidity_before": "0",
+    "liquidity_delta": "1",
+    "fee": "0",
+    "fee_growth_global_0_before": "0",
+    "fee_growth_global_1_before": "0",
+    "fee_growth_global_0": "0",
+    "fee_growth_global_1": "0",
+    "prev_position_commitment": "0",
+    "new_position_commitment": "1137776317008444263606861529333771088712503661624386613411358608743075191549",
+    "liquidity_commitment": "1137776317008444263606861529333771088712503661624386613411358608743075191549",
+    "fee_growth_inside_0_before": "0",
+    "fee_growth_inside_1_before": "0",
+    "fee_growth_inside_0_after": "0",
+    "fee_growth_inside_1_after": "0",
+    "input_commitment_token0": "3511756227797428554616886343807761465432217410168083074975874897075545913969",
+    "input_commitment_token1": "0",
+    "nullifier_token0": "2390122378844555382165133466304099095867403183585025845902783440343571344708",
+    "nullifier_token1": "0",
+    "output_commitment_token0": "0",
+    "output_commitment_token1": "0",
+    "protocol_fee_0": "0",
+    "protocol_fee_1": "0",
+    "token0_note_count": "1",
+    "token1_note_count": "0",
+    "nullifier_token0_extra": [
+      "0",
+      "0",
+      "0"
+    ],
+    "nullifier_token1_extra": [
+      "0",
+      "0",
+      "0"
+    ],
+    "input_commitment_token0_extra": [
+      "0",
+      "0",
+      "0"
+    ],
+    "input_commitment_token1_extra": [
+      "0",
+      "0",
+      "0"
+    ],
+    "token0_note_amount": [
+      "1",
+      "0",
+      "0",
+      "0"
+    ],
+    "token0_note_secret": [
+      "1",
+      "1",
+      "1",
+      "1"
+    ],
+    "token0_note_nullifier_seed": [
+      "23",
+      "23",
+      "23",
+      "23"
+    ],
+    "token1_note_amount": [
+      "0",
+      "0",
+      "0",
+      "0"
+    ],
+    "token1_note_secret": [
+      "1",
+      "1",
+      "1",
+      "1"
+    ],
+    "token1_note_nullifier_seed": [
+      "34",
+      "34",
+      "34",
+      "34"
+    ],
+    "position_liquidity": "1",
+    "position_secret_in": "1",
+    "position_nullifier_seed_in": "39",
+    "position_secret_out": "1",
+    "position_nullifier_seed_out": "39",
+    "out_token0_secret": "1",
+    "out_token0_nullifier_seed": "5",
+    "out_token1_secret": "1",
+    "out_token1_nullifier_seed": "34",
+    "tick_spacing": "1",
+    "amount0_below_div_q": [
+      [
+        "9458925838078367685",
+        "9223365119331",
+        "0",
+        "0"
+      ],
+      [
+        "9458925838078367686",
+        "9223365119331",
+        "0",
+        "0"
+      ],
+      [
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "amount0_inside_div_q": [
+      [
+        "9458925838078367685",
+        "9223365119331",
+        "0",
+        "0"
+      ],
+      [
+        "9458925838078367686",
+        "9223365119331",
+        "0",
+        "0"
+      ],
+      [
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "tick_lower_inv_div_q": [
+      "16962059538608879371",
+      "9223369731012",
+      "1",
+      "0"
+    ],
+    "tick_upper_inv_div_q": [
+      "10175519178963368023",
+      "18446744073709",
+      "1",
+      "0"
+    ]
+  }
+}

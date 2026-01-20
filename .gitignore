@@ -1,0 +1,16 @@
+/target
+.scarb-cache-abs/
+.scarb-cache/
+.scarb_cache/
+.scarb_home/
+.snfoundry_cache/
+artifacts/
+/build/
+/rust/**/target/
+/circom/target/
+/circuits/node_modules/
+/.cache/
+/.deps/
+/tmp_notes/
+/rust/client/tmp_notes/
+/rust/client/build/

@@ -1,0 +1,15 @@
+[package]
+name = "zylith-asp"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+starknet = "0.10"
+starknet-crypto = "0.6"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres"] }
+tower = "0.4"
+url = "2"

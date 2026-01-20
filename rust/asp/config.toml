@@ -1,0 +1,7 @@
+starknet_rpc_url = "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_10/GBq-iWeiQEZuvL8bAYJPM"
+shielded_notes_address = "0x06c6804fa6d2a8f3d13e9941b417d650fe1d5c86e4230a7e00880dfce14368cb"
+start_block = 0
+postgres_url = "postgres://tanya:lua@127.0.0.1:5432/zylith"
+server_port = 8080
+finality_depth = 5
+sync_token = "black-dahlia"
