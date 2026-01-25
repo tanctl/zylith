@@ -14,3 +14,8 @@ artifacts/
 /tmp_notes/
 /rust/client/tmp_notes/
 /rust/client/build/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.env.local
+/frontend/.env.*.local
+/frontend/.next/

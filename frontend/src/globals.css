@@ -1,0 +1,199 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --noise-opacity: 0.018;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  background: #050607;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 120% 80% at 25% 15%, rgba(12, 18, 28, 0.12) 0%, transparent 45%),
+    radial-gradient(ellipse 100% 60% at 75% 85%, rgba(10, 15, 24, 0.10) 0%, transparent 40%),
+    radial-gradient(ellipse 80% 50% at 50% 50%, rgba(8, 12, 20, 0.08) 0%, transparent 50%),
+    #050607;
+  color: #e2e4e8;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+}
+
+/* Micro-noise texture overlay */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: var(--noise-opacity);
+  mix-blend-mode: overlay;
+}
+
+/* Selection */
+::selection {
+  background: rgba(30, 45, 70, 0.4);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(40, 46, 56, 0.5);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(48, 55, 66, 0.6);
+}
+
+/* Input reset */
+input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font: inherit;
+}
+
+input::placeholder {
+  color: #4b5058;
+}
+
+/* Button reset */
+button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Focus states - internal glow, never outline */
+:focus-visible {
+  outline: none;
+}
+
+/* Heavy motion defaults */
+.transition-heavy {
+  transition-property: all;
+  transition-duration: 400ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.1, 1);
+}
+
+/* Surface layers */
+@layer components {
+  .surface-0 {
+    background: rgba(13, 16, 20, 0.85);
+    backdrop-filter: blur(12px);
+  }
+
+  .surface-1 {
+    background: rgba(16, 19, 24, 0.88);
+    backdrop-filter: blur(16px);
+  }
+
+  .surface-2 {
+    background: rgba(19, 22, 28, 0.90);
+    backdrop-filter: blur(20px);
+  }
+
+  .surface-3 {
+    background: rgba(22, 26, 32, 0.92);
+    backdrop-filter: blur(24px);
+  }
+
+  .surface-modal {
+    background: rgba(14, 17, 22, 0.95);
+    backdrop-filter: blur(32px);
+  }
+
+  /* Edge treatment - 1px inset border simulation */
+  .edge-subtle {
+    box-shadow: inset 0 0 0 1px rgba(35, 40, 48, 0.4);
+  }
+
+  .edge-medium {
+    box-shadow: inset 0 0 0 1px rgba(40, 46, 56, 0.5);
+  }
+
+  .edge-strong {
+    box-shadow: inset 0 0 0 1px rgba(48, 55, 66, 0.6);
+  }
+
+  /* Accent inner glow - never border */
+  .accent-inner {
+    box-shadow: 
+      inset 0 0 0 1px rgba(35, 50, 80, 0.25),
+      inset 0 1px 8px rgba(25, 35, 55, 0.3);
+  }
+
+  .accent-focus {
+    box-shadow: 
+      inset 0 0 0 1px rgba(40, 60, 95, 0.35),
+      inset 0 1px 12px rgba(30, 45, 70, 0.25);
+  }
+
+  /* Diagonal cut pseudo-element */
+  .cut-diagonal {
+    position: relative;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+  }
+
+  .cut-diagonal-lg {
+    position: relative;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+  }
+
+  /* Inner highlight for glass effect */
+  .inner-highlight {
+    box-shadow: 
+      inset 0 1px 0 rgba(255, 255, 255, 0.02),
+      inset 0 0 0 1px rgba(35, 40, 48, 0.4);
+  }
+
+  /* Data cells */
+  .data-cell {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    color: #e2e4e8;
+  }
+
+  /* Status indicators */
+  .status-active {
+    background: rgba(25, 35, 55, 0.3);
+    box-shadow: inset 0 0 0 1px rgba(35, 50, 80, 0.25);
+  }
+
+  .status-inactive {
+    background: rgba(20, 22, 26, 0.5);
+    box-shadow: inset 0 0 0 1px rgba(35, 40, 48, 0.3);
+  }
+}
