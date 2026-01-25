@@ -1,0 +1,17 @@
+rpc_url = "http://127.0.0.1:5050"
+asp_url = "http://127.0.0.1:8080"
+pool_address = "0x0"
+shielded_notes_address = "0x0"
+token0 = "0x0"
+token1 = "0x0"
+
+bind_addr = "0.0.0.0:8081"
+artifacts_dir = "../../artifacts"
+max_concurrent_proofs = 2
+request_timeout_secs = 900
+max_body_bytes = 2097152
+cors_allow_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+rate_limit_per_minute = 60
+rate_limit_burst = 20
+api_key = ""
+trust_proxy = false

@@ -1,0 +1,27 @@
+[package]
+name = "zylith-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+async-trait = "0.1"
+num-bigint = "0.4"
+num-traits = "0.2"
+hex = "0.4"
+url = "2"
+starknet = "0.17"
+zylith-client = { path = "../client" }
+zylith-prover = { path = "../prover" }
+
+[patch.crates-io]
+size-of = { path = "../prover/vendor/size-of" }
