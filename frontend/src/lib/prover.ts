@@ -106,12 +106,14 @@ export type WithdrawProofResponse = {
 export type DepositProofRequest = {
   note: NoteInput;
   token_id: number;
+  auto_generate?: boolean;
 };
 
 export type DepositProofResponse = {
   proof: string[];
   insertion_proof: MerklePath;
   commitment: string;
+  note?: NoteOutput;
 };
 
 export type PoolConfigResponse = {

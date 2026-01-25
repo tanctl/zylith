@@ -1,3 +1,5 @@
+import { normalizeFelt } from "./zylith";
+
 export type TokenNote = {
   id: string;
   type: "token";
@@ -206,7 +208,7 @@ export function createTokenNote(
   return {
     id: crypto.randomUUID(),
     type: "token",
-    token,
+    token: normalizeFelt(token),
     amount,
     secret,
     nullifier,

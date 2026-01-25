@@ -16,6 +16,7 @@ import {
   buildLiquidityRemoveCall,
   expectedChainId,
   formatUnits,
+  normalizeFelt,
   tokenSymbols,
   zylithConfig,
 } from "../lib/zylith";
@@ -190,14 +191,14 @@ export default function PositionsPage() {
     fetchPoolConfig()
       .then((config) => {
         if (!cancelled) {
-          const envToken0 = zylithConfig.token0.toLowerCase();
-          const envToken1 = zylithConfig.token1.toLowerCase();
-          const envPool = zylithConfig.poolAddress.toLowerCase();
-          const envNotes = zylithConfig.shieldedNotesAddress.toLowerCase();
-          const cfgToken0 = config.token0.toLowerCase();
-          const cfgToken1 = config.token1.toLowerCase();
-          const cfgPool = config.pool_address.toLowerCase();
-          const cfgNotes = config.shielded_notes_address.toLowerCase();
+          const envToken0 = normalizeFelt(zylithConfig.token0);
+          const envToken1 = normalizeFelt(zylithConfig.token1);
+          const envPool = normalizeFelt(zylithConfig.poolAddress);
+          const envNotes = normalizeFelt(zylithConfig.shieldedNotesAddress);
+          const cfgToken0 = normalizeFelt(config.token0);
+          const cfgToken1 = normalizeFelt(config.token1);
+          const cfgPool = normalizeFelt(config.pool_address);
+          const cfgNotes = normalizeFelt(config.shielded_notes_address);
           if (
             cfgToken0 !== envToken0 ||
             cfgToken1 !== envToken1 ||
@@ -433,11 +434,11 @@ export default function PositionsPage() {
     if (required === BigInt(0)) {
       return [];
     }
-    const tokenKey = token.toLowerCase();
+    const tokenKey = normalizeFelt(token);
     const notes = vaultNotes.filter(
       (note): note is TokenNote =>
         note.type === "token" &&
-        note.token.toLowerCase() === tokenKey &&
+        normalizeFelt(note.token) === tokenKey &&
         note.state === "unspent",
     );
     const sorted = [...notes].sort(
@@ -1220,12 +1221,12 @@ export default function PositionsPage() {
 }
 
 function balanceForToken(notes: VaultNote[], token: string): bigint {
-  const tokenKey = token.toLowerCase();
+  const tokenKey = normalizeFelt(token);
   let total = BigInt(0);
   for (const note of notes) {
     if (
       note.type === "token" &&
-      note.token.toLowerCase() === tokenKey &&
+      normalizeFelt(note.token) === tokenKey &&
       note.state === "unspent"
     ) {
       total += BigInt(note.amount);

@@ -7,6 +7,7 @@ import {
   proveSwap,
   proveWithdraw,
   quoteSwap,
+  type NoteInput,
   type PoolConfigResponse,
 } from "../lib/prover";
 import {
@@ -16,6 +17,7 @@ import {
   buildWithdrawCall,
   expectedChainId,
   formatUnits,
+  normalizeFelt,
   parseUnits,
   tokenSymbols,
   zylithConfig,
@@ -37,6 +39,8 @@ const MAX_DECIMALS = 18;
 const PENDING_TX_MESSAGE =
   "Transaction not confirmed. Notes remain pending until confirmed.";
 type PendingResolution = "accepted" | "rejected";
+const MAX_DEPOSIT_ATTEMPTS = 64;
+const FELT_RANGE_ERROR = "stark field";
 
 function validateAmountInput(value: string): string | null {
   const raw = value.trim();
@@ -220,14 +224,14 @@ export default function SwapPage() {
     fetchPoolConfig()
       .then((config) => {
         if (!cancelled) {
-          const envToken0 = zylithConfig.token0.toLowerCase();
-          const envToken1 = zylithConfig.token1.toLowerCase();
-          const envPool = zylithConfig.poolAddress.toLowerCase();
-          const envNotes = zylithConfig.shieldedNotesAddress.toLowerCase();
-          const cfgToken0 = config.token0.toLowerCase();
-          const cfgToken1 = config.token1.toLowerCase();
-          const cfgPool = config.pool_address.toLowerCase();
-          const cfgNotes = config.shielded_notes_address.toLowerCase();
+          const envToken0 = normalizeFelt(zylithConfig.token0);
+          const envToken1 = normalizeFelt(zylithConfig.token1);
+          const envPool = normalizeFelt(zylithConfig.poolAddress);
+          const envNotes = normalizeFelt(zylithConfig.shieldedNotesAddress);
+          const cfgToken0 = normalizeFelt(config.token0);
+          const cfgToken1 = normalizeFelt(config.token1);
+          const cfgPool = normalizeFelt(config.pool_address);
+          const cfgNotes = normalizeFelt(config.shielded_notes_address);
           if (
             cfgToken0 !== envToken0 ||
             cfgToken1 !== envToken1 ||
@@ -340,17 +344,17 @@ export default function SwapPage() {
 
   const tokenIn = zeroForOne ? zylithConfig.token0 : zylithConfig.token1;
   const tokenOut = zeroForOne ? zylithConfig.token1 : zylithConfig.token0;
-  const tokenInKey = tokenIn.toLowerCase();
-  const tokenOutKey = tokenOut.toLowerCase();
+  const tokenInKey = normalizeFelt(tokenIn);
+  const tokenOutKey = normalizeFelt(tokenOut);
   const symbolIn = zeroForOne ? tokenSymbols.token0 : tokenSymbols.token1;
   const symbolOut = zeroForOne ? tokenSymbols.token1 : tokenSymbols.token0;
   const withdrawTokenAddress =
     withdrawTokenId === 0 ? zylithConfig.token0 : zylithConfig.token1;
-  const withdrawTokenKey = withdrawTokenAddress.toLowerCase();
+  const withdrawTokenKey = normalizeFelt(withdrawTokenAddress);
 
   const balances = useMemo(() => {
-    const token0Key = zylithConfig.token0.toLowerCase();
-    const token1Key = zylithConfig.token1.toLowerCase();
+    const token0Key = normalizeFelt(zylithConfig.token0);
+    const token1Key = normalizeFelt(zylithConfig.token1);
     const totals: Record<string, bigint> = {
       [token0Key]: BigInt(0),
       [token1Key]: BigInt(0),
@@ -358,7 +362,7 @@ export default function SwapPage() {
     for (const note of vaultNotes) {
       if (note.type === "token" && note.state === "unspent") {
         const amount = BigInt(note.amount);
-        const key = note.token.toLowerCase();
+        const key = normalizeFelt(note.token);
         totals[key] = (totals[key] ?? BigInt(0)) + amount;
       }
     }
@@ -376,7 +380,7 @@ export default function SwapPage() {
     return vaultNotes.filter(
       (note): note is TokenNote =>
         note.type === "token" &&
-        note.token.toLowerCase() === withdrawTokenKey &&
+        normalizeFelt(note.token) === withdrawTokenKey &&
         note.state === "unspent",
     );
   }, [vaultNotes, withdrawTokenKey]);
@@ -545,11 +549,11 @@ export default function SwapPage() {
   };
 
   const selectNotes = (amount: bigint, token: string) => {
-    const tokenKey = token.toLowerCase();
+    const tokenKey = normalizeFelt(token);
     const candidates = vaultNotes.filter(
       (note): note is TokenNote =>
         note.type === "token" &&
-        note.token.toLowerCase() === tokenKey &&
+        normalizeFelt(note.token) === tokenKey &&
         note.state === "unspent",
     );
     const sorted = [...candidates].sort(
@@ -749,18 +753,39 @@ export default function SwapPage() {
       const tokenId = depositTokenId;
       const tokenAddress =
         tokenId === 0 ? zylithConfig.token0 : zylithConfig.token1;
-      const note = {
-        secret: generateSecretHex(),
-        nullifier: generateSecretHex(),
-        amount: amount.toString(),
-        token: tokenAddress,
-      };
       setDepositPending(true);
-      const proofResult = await proveDeposit({
-        note,
-        token_id: tokenId,
-      });
+      let proofResult: Awaited<ReturnType<typeof proveDeposit>> | null = null;
+      let note: NoteInput | null = null;
+      for (let attempt = 0; attempt < MAX_DEPOSIT_ATTEMPTS; attempt += 1) {
+        note = {
+          secret: generateSecretHex(),
+          nullifier: generateSecretHex(),
+          amount: amount.toString(),
+          token: tokenAddress,
+        };
+        try {
+          proofResult = await proveDeposit({
+            note,
+            token_id: tokenId,
+            auto_generate: true,
+          });
+          break;
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            err.message.toLowerCase().includes(FELT_RANGE_ERROR)
+          ) {
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!proofResult || !note) {
+        setDepositError("Failed to generate a valid note. Please try again.");
+        return;
+      }
 
+      const finalNote = (proofResult.note ?? note) as NoteInput;
       const approveCall = buildApproveCall(
         tokenAddress,
         zylithConfig.shieldedNotesAddress,
@@ -776,10 +801,10 @@ export default function SwapPage() {
         depositCall,
       ]);
       const pendingNote = createTokenNote(
-        note.token,
-        note.amount,
-        note.secret,
-        note.nullifier,
+        finalNote.token,
+        finalNote.amount,
+        finalNote.secret,
+        finalNote.nullifier,
         "pending",
         transaction_hash,
         "receive",

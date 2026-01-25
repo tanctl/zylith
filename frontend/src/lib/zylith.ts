@@ -114,6 +114,12 @@ export function normalizeHex(value: string): string {
   return prefixed.toLowerCase();
 }
 
+export function normalizeFelt(value: string): string {
+  const hex = normalizeHex(value);
+  const stripped = hex.replace(/^0x0+/, "0x");
+  return stripped === "0x" ? "0x0" : stripped;
+}
+
 export function toFeltHex(value: string | number | bigint): string {
   if (typeof value === "string") {
     if (value.startsWith("0x")) {

@@ -33,7 +33,8 @@ use starknet::providers::jsonrpc::{HttpTransport, JsonRpcClient};
 use starknet::providers::Provider;
 
 use zylith_client::{
-    compute_commitment, generate_nullifier_hash, parse_felt, quote_liquidity_amounts, ClientError,
+    compute_commitment, generate_note_with_token_id, generate_nullifier_hash, parse_felt,
+    quote_liquidity_amounts, ClientError,
     LiquidityAddProveRequest, LiquidityClaimProveRequest, LiquidityProveResult,
     LiquidityRemoveProveRequest, MerklePath, Note, PoolConfig, PositionNote, SignedAmount,
     SwapProveRequest, SwapStepQuote, ZylithClient, ZylithConfig, MAX_INPUT_NOTES,
@@ -205,6 +206,7 @@ struct LiquidityProofResponse {
 struct DepositProofRequest {
     note: NoteInput,
     token_id: u8,
+    auto_generate: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +214,7 @@ struct DepositProofResponse {
     proof: Vec<String>,
     insertion_proof: MerklePathResponse,
     commitment: String,
+    note: Option<NoteOutput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -998,15 +1001,33 @@ async fn prove_deposit(
     if request.token_id > 1 {
         return Err(ApiError::BadRequest("token_id must be 0 or 1".to_string()));
     }
-    let note = parse_note(request.note, &state.config)?;
     let expected_token = if request.token_id == 0 {
         state.config.token0
     } else {
         state.config.token1
     };
-    if note.token != expected_token {
-        return Err(ApiError::BadRequest("note token mismatch".to_string()));
-    }
+    let auto_generate = request.auto_generate.unwrap_or(false);
+    let (note, response_note) = if auto_generate {
+        let amount = parse_u128(&request.note.amount)?;
+        if amount == 0 {
+            return Err(ApiError::BadRequest(
+                "note amount must be greater than zero".to_string(),
+            ));
+        }
+        let token = parse_felt(&request.note.token)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        if token != expected_token {
+            return Err(ApiError::BadRequest("note token mismatch".to_string()));
+        }
+        let note = generate_note_with_token_id(amount, expected_token, request.token_id)?;
+        (note.clone(), Some(note_output(note)))
+    } else {
+        let note = parse_note(request.note, &state.config)?;
+        if note.token != expected_token {
+            return Err(ApiError::BadRequest("note token mismatch".to_string()));
+        }
+        (note, None)
+    };
 
     let commitment = compute_commitment(&note, request.token_id)?;
     let tag = vk_tag("DEPOSIT")?;
@@ -1046,6 +1067,7 @@ async fn prove_deposit(
         proof: proof.to_calldata(),
         insertion_proof: merkle_path_response(insertion_proof),
         commitment: felt_to_hex(commitment),
+        note: response_note,
     }))
 }
 
