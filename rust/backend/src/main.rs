@@ -300,7 +300,8 @@ enum ApiError {
     BadRequest(String),
     Upstream(String),
     Prover(String),
-    Busy,
+    QueueFull,
+    RateLimited,
     Unauthorized,
     Internal(String),
 }
@@ -394,7 +395,10 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg),
             ApiError::Prover(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ApiError::Busy => (StatusCode::TOO_MANY_REQUESTS, "proof queue full".to_string()),
+            ApiError::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "proof queue full".to_string()),
+            ApiError::RateLimited => {
+                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string())
+            }
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
@@ -753,7 +757,7 @@ async fn rate_limit(
     }
     let ip = client_ip(&req, addr, state.config.trust_proxy);
     if !state.rate_limiter.allow(ip) {
-        return ApiError::Busy.into_response();
+        return ApiError::RateLimited.into_response();
     }
     next.run(req).await
 }
@@ -920,7 +924,7 @@ async fn prove_swap(
     State(state): State<AppState>,
     Json(request): Json<SwapProofRequest>,
 ) -> Result<Json<SwapProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     if request.notes.is_empty() {
         return Err(ApiError::BadRequest("notes cannot be empty".to_string()));
     }
@@ -997,7 +1001,7 @@ async fn prove_deposit(
     State(state): State<AppState>,
     Json(request): Json<DepositProofRequest>,
 ) -> Result<Json<DepositProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     if request.token_id > 1 {
         return Err(ApiError::BadRequest("token_id must be 0 or 1".to_string()));
     }
@@ -1075,7 +1079,7 @@ async fn prove_liquidity_add(
     State(state): State<AppState>,
     Json(request): Json<LiquidityAddProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     let token0_notes =
         parse_notes_for_token(request.token0_notes, &state.config, state.config.token0)?;
     let token1_notes =
@@ -1144,7 +1148,7 @@ async fn prove_liquidity_remove(
     State(state): State<AppState>,
     Json(request): Json<LiquidityRemoveProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     let position_note = parse_position_note(request.position_note)?;
     let output_position_note = parse_position_note_option(request.output_position_note)?;
     let output_note_token0 =
@@ -1183,7 +1187,7 @@ async fn prove_liquidity_claim(
     State(state): State<AppState>,
     Json(request): Json<LiquidityClaimProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     let position_note = parse_position_note(request.position_note)?;
     let output_position_note = parse_position_note_option(request.output_position_note)?;
     let output_note_token0 =
@@ -1215,7 +1219,7 @@ async fn prove_withdraw(
     State(state): State<AppState>,
     Json(request): Json<WithdrawProofRequest>,
 ) -> Result<Json<WithdrawProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::Busy)?;
+    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
     if request.token_id > 1 {
         return Err(ApiError::BadRequest("token_id must be 0 or 1".to_string()));
     }

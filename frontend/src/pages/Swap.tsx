@@ -628,12 +628,6 @@ export default function SwapPage() {
         setQuoteSqrtEnd(quoteSqrtLocal);
         setQuoteForAmount(amountInLabel);
       }
-      const sqrtLimit = buildSqrtRatioLimit(
-        quoteSqrtLocal,
-        zeroForOne,
-        slippageBps,
-        poolConfig,
-      );
       const result = await proveSwap({
         notes: selectedNotes.map((note) => ({
           secret: note.secret,
@@ -643,7 +637,7 @@ export default function SwapPage() {
         })),
         zero_for_one: zeroForOne,
         exact_out: false,
-        sqrt_ratio_limit: sqrtLimit ?? undefined,
+        sqrt_ratio_limit: sqrtRatioLimit ?? undefined,
       });
 
       const call = buildSwapCall(
