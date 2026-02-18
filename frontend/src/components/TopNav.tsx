@@ -91,8 +91,14 @@ export default function TopNav() {
     <header className="w-full surface-0 edge-subtle">
       <div className="mx-auto flex h-12 w-full items-center justify-between px-10">
         {/* Logo - understated, no decoration */}
-        <div className="text-[10px] font-medium uppercase tracking-[0.35em] text-zylith-text-primary select-none">
-          ZYLITH
+        <div className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.35em] text-zylith-text-primary select-none">
+          <img
+            src="/zylith.png"
+            alt=""
+            aria-hidden="true"
+            className="h-6 w-6 object-contain"
+          />
+          <span>ZYLITH</span>
         </div>
 
         {/* Navigation - angular, precision */}
