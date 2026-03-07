@@ -2,14 +2,12 @@ use core::array::{ArrayTrait, SpanTrait};
 use core::option::{Option, OptionTrait};
 use core::traits::TryInto;
 use starknet::ContractAddress;
-use zylith::constants::generated as generated_constants;
 use zylith::clmm::math::fee::compute_fee;
 use zylith::clmm::math::liquidity::liquidity_delta_to_amount_delta;
-use zylith::privacy::ZylithVerifier::{
-    DepositPublicOutputs, WithdrawPublicOutputs, IZylithVerifier,
-};
+use zylith::constants::generated as generated_constants;
+use zylith::privacy::ZylithVerifier::{DepositPublicOutputs, IZylithVerifier, WithdrawPublicOutputs};
 use crate::common::{
-    encode_i32_signed, u256_from_bool, u256_from_felt, u256_from_u128, neg_u256_from_mag,
+    encode_i32_signed, neg_u256_from_mag, u256_from_bool, u256_from_felt, u256_from_u128,
 };
 
 const VK_SWAP: felt252 = 'SWAP';
@@ -17,6 +15,7 @@ const VK_SWAP_EXACT_OUT: felt252 = 'SWAP_EXACT_OUT';
 const VK_LIQ_ADD: felt252 = 'LIQ_ADD';
 const VK_LIQ_REMOVE: felt252 = 'LIQ_REMOVE';
 const VK_LIQ_CLAIM: felt252 = 'LIQ_CLAIM';
+const TEST_SWAP_STEPS: usize = 8;
 
 pub fn build_swap_outputs(
     merkle_root: felt252,
@@ -36,7 +35,7 @@ pub fn build_swap_outputs(
     note_count: u128,
 ) -> Array<u256> {
     let mut outputs: Array<u256> = array![];
-    let max_steps: usize = generated_constants::MAX_SWAP_STEPS;
+    let max_steps: usize = TEST_SWAP_STEPS;
     let max_input_notes: usize = generated_constants::MAX_INPUT_NOTES;
 
     outputs.append(u256_from_felt(VK_SWAP));
@@ -122,10 +121,14 @@ pub fn build_swap_outputs_with_extras(
     extra_commitments: Span<felt252>,
 ) -> Array<u256> {
     let mut outputs: Array<u256> = array![];
-    let max_steps: usize = generated_constants::MAX_SWAP_STEPS;
+    let max_steps: usize = TEST_SWAP_STEPS;
     let max_input_notes: usize = generated_constants::MAX_INPUT_NOTES;
     let note_count_usize: usize = note_count.try_into().expect('NOTE_COUNT_RANGE');
-    let expected_extra = if note_count_usize > 0 { note_count_usize - 1 } else { 0 };
+    let expected_extra = if note_count_usize > 0 {
+        note_count_usize - 1
+    } else {
+        0
+    };
     assert(extra_nullifiers.len() == expected_extra, 'EXTRA_NULLIFIER_COUNT');
     assert(extra_commitments.len() == expected_extra, 'EXTRA_COMMITMENT_COUNT');
 
@@ -220,7 +223,7 @@ pub fn build_swap_outputs_with_steps(
     step_limit_value: u256,
 ) -> Array<u256> {
     let mut outputs: Array<u256> = array![];
-    let max_steps: usize = generated_constants::MAX_SWAP_STEPS;
+    let max_steps: usize = TEST_SWAP_STEPS;
     let max_input_notes: usize = generated_constants::MAX_INPUT_NOTES;
 
     outputs.append(u256_from_felt(VK_SWAP));
@@ -414,8 +417,16 @@ pub fn build_liquidity_add_outputs_with_notes(
     let max_input_notes: usize = generated_constants::MAX_INPUT_NOTES;
     let note0_usize: usize = note_count0.try_into().expect('NOTE_COUNT0_RANGE');
     let note1_usize: usize = note_count1.try_into().expect('NOTE_COUNT1_RANGE');
-    let expected0 = if note0_usize > 0 { note0_usize - 1 } else { 0 };
-    let expected1 = if note1_usize > 0 { note1_usize - 1 } else { 0 };
+    let expected0 = if note0_usize > 0 {
+        note0_usize - 1
+    } else {
+        0
+    };
+    let expected1 = if note1_usize > 0 {
+        note1_usize - 1
+    } else {
+        0
+    };
     assert(extra_nullifiers0.len() == expected0, 'EXTRA_NULLIFIER0_COUNT');
     assert(extra_commitments0.len() == expected0, 'EXTRA_COMMITMENT0_COUNT');
     assert(extra_nullifiers1.len() == expected1, 'EXTRA_NULLIFIER1_COUNT');
@@ -677,13 +688,13 @@ pub fn build_liquidity_claim_outputs(
 
 #[starknet::contract]
 pub mod MockZylithVerifier {
-    use super::{
-        ArrayTrait, ContractAddress, DepositPublicOutputs, Option,
-        OptionTrait, SpanTrait, WithdrawPublicOutputs, IZylithVerifier,
-    };
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
+    };
+    use super::{
+        ArrayTrait, ContractAddress, DepositPublicOutputs, IZylithVerifier, Option, OptionTrait,
+        SpanTrait, WithdrawPublicOutputs,
     };
 
     #[storage]
@@ -753,7 +764,7 @@ pub mod MockZylithVerifier {
         }
 
         fn set_deposit_output(
-            ref self: ContractState, commitment: felt252, amount: u256, token_id: felt252
+            ref self: ContractState, commitment: felt252, amount: u256, token_id: felt252,
         ) {
             self.deposit_commitment.write(commitment);
             self.deposit_amount.write(amount);
@@ -797,7 +808,7 @@ pub mod MockZylithVerifier {
         fn set_liq_remove_outputs(ref self: TContractState, outputs: Span<u256>);
         fn set_liq_claim_outputs(ref self: TContractState, outputs: Span<u256>);
         fn set_deposit_output(
-            ref self: TContractState, commitment: felt252, amount: u256, token_id: felt252
+            ref self: TContractState, commitment: felt252, amount: u256, token_id: felt252,
         );
         fn set_withdraw_output(
             ref self: TContractState,
@@ -812,7 +823,9 @@ pub mod MockZylithVerifier {
 
     #[abi(embed_v0)]
     impl MockZylithVerifierImpl of IZylithVerifier<ContractState> {
-        fn verify_private_swap(self: @ContractState, calldata: Span<felt252>) -> Option<Span<u256>> {
+        fn verify_private_swap(
+            self: @ContractState, calldata: Span<felt252>,
+        ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.swap_should_verify.read() {
                 return Option::<Span<u256>>::None;
@@ -821,7 +834,7 @@ pub mod MockZylithVerifier {
         }
 
         fn verify_private_swap_exact_out(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.swap_exact_should_verify.read() {
@@ -831,7 +844,7 @@ pub mod MockZylithVerifier {
         }
 
         fn verify_private_liquidity_add(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.liq_add_should_verify.read() {
@@ -841,7 +854,7 @@ pub mod MockZylithVerifier {
         }
 
         fn verify_private_liquidity_remove(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.liq_remove_should_verify.read() {
@@ -851,7 +864,7 @@ pub mod MockZylithVerifier {
         }
 
         fn verify_private_liquidity_claim(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.liq_claim_should_verify.read() {
@@ -861,7 +874,7 @@ pub mod MockZylithVerifier {
         }
 
         fn verify_deposit(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<DepositPublicOutputs> {
             let _ = calldata;
             if !self.deposit_should_verify.read() {
@@ -872,12 +885,12 @@ pub mod MockZylithVerifier {
                     commitment: self.deposit_commitment.read(),
                     amount: self.deposit_amount.read(),
                     token_id: self.deposit_token_id.read(),
-                }
+                },
             )
         }
 
         fn verify_withdraw(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<WithdrawPublicOutputs> {
             let _ = calldata;
             if !self.withdraw_should_verify.read() {
@@ -890,7 +903,7 @@ pub mod MockZylithVerifier {
                     amount: self.withdraw_amount.read(),
                     token_id: self.withdraw_token_id.read(),
                     recipient: self.withdraw_recipient.read(),
-                }
+                },
             )
         }
 
@@ -899,6 +912,19 @@ pub mod MockZylithVerifier {
         }
 
         fn update_swap_exact_out_verifier(ref self: ContractState, new_address: ContractAddress) {
+            let _ = new_address;
+        }
+
+        fn update_swap_verifier_variant(
+            ref self: ContractState,
+            swap_steps: usize,
+            zero_for_one: bool,
+            exact_out: bool,
+            new_address: ContractAddress,
+        ) {
+            let _ = swap_steps;
+            let _ = zero_for_one;
+            let _ = exact_out;
             let _ = new_address;
         }
 
@@ -911,10 +937,6 @@ pub mod MockZylithVerifier {
         }
 
         fn update_liquidity_claim_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-        }
-
-        fn update_membership_verifier(ref self: ContractState, new_address: ContractAddress) {
             let _ = new_address;
         }
 
@@ -985,7 +1007,9 @@ pub mod MockZylithVerifier {
     fn read_outputs(self: @ContractState, kind: OutputKind) -> Array<u256> {
         let (len, map) = match kind {
             OutputKind::SwapOutputs => (self.swap_outputs_len.read(), OutputMap::Swap),
-            OutputKind::SwapExactOutputs => (self.swap_exact_outputs_len.read(), OutputMap::SwapExact),
+            OutputKind::SwapExactOutputs => (
+                self.swap_exact_outputs_len.read(), OutputMap::SwapExact,
+            ),
             OutputKind::LiquidityAddOutputs => (self.liq_add_outputs_len.read(), OutputMap::LiqAdd),
             OutputKind::LiquidityRemoveOutputs => {
                 (self.liq_remove_outputs_len.read(), OutputMap::LiqRemove)

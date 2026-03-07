@@ -1,16 +1,12 @@
+use core::serde::Serde;
 #[feature("deprecated_legacy_map")]
 use core::traits::TryInto;
-use core::serde::Serde;
 use snforge_std::{start_cheat_caller_address, test_address};
 use starknet::ContractAddress;
-
-use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
-use zylith::core::PoolAdapter::IPoolAdapterDispatcher;
-use zylith::core::PoolAdapter::IPoolAdapterDispatcherTrait;
-use zylith::privacy::ShieldedNotes::MerkleProof;
 use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
-
-use crate::common::{deploy_contract_at, u256_from_u128};
+use zylith::core::PoolAdapter::{IPoolAdapterDispatcher, IPoolAdapterDispatcherTrait};
+use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
+use zylith::privacy::ShieldedNotes::MerkleProof;
 use crate::common::mock_proof_generator::{build_swap_outputs, build_swap_outputs_with_steps};
 use crate::common::mocks::MockGaragaVerifier::{
     MockGaragaVerifierExternalDispatcher, MockGaragaVerifierExternalDispatcherTrait,
@@ -18,6 +14,10 @@ use crate::common::mocks::MockGaragaVerifier::{
 use crate::common::mocks::MockPoolAdapter::{
     MockPoolAdapterExternalDispatcher, MockPoolAdapterExternalDispatcherTrait,
 };
+use crate::common::{deploy_contract_at, u256_from_u128};
+
+const SWAP_STEPS_PREFIX: felt252 = 'SWAP_STEPS';
+const MAX_SWAP_STEPS: felt252 = 8;
 
 fn set_adapter_state(
     adapter_address: ContractAddress,
@@ -28,17 +28,13 @@ fn set_adapter_state(
 ) {
     let adapter = IPoolAdapterDispatcher { contract_address: adapter_address };
     start_cheat_caller_address(adapter_address, pool_address);
-    adapter.set_pool_state(
-        sqrt_price,
-        tick,
-        1_u128,
-        liquidity,
-        u256_from_u128(0),
-        u256_from_u128(0),
-    );
+    adapter
+        .set_pool_state(sqrt_price, tick, 1_u128, liquidity, u256_from_u128(0), u256_from_u128(0));
 }
 
-fn setup_swap_env() -> (ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress) {
+fn setup_swap_env() -> (
+    ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress,
+) {
     let pool_address = 0x1000.try_into().expect('ADDRESS_RANGE');
     let core_address = 0x1100.try_into().expect('ADDRESS_RANGE');
     let adapter_address = 0x1200.try_into().expect('ADDRESS_RANGE');
@@ -113,14 +109,39 @@ fn output_proofs_for_commitment(commitment: felt252) -> Array<MerkleProof> {
     }
 }
 
+fn swap_calldata(zero_for_one: bool) -> Array<felt252> {
+    let mut calldata = array![];
+    calldata.append(SWAP_STEPS_PREFIX);
+    calldata.append(MAX_SWAP_STEPS);
+    calldata.append(if zero_for_one {
+        1
+    } else {
+        0
+    });
+    calldata
+}
+
 #[test]
 fn test_swap_exact_input_single_step() {
     let (pool, adapter_address, garaga_address, pool_address) = setup_swap_env();
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        111, 999, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        777, 0, false, true, 555, 0, 1,
+        111,
+        999,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        777,
+        0,
+        false,
+        true,
+        555,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -131,7 +152,7 @@ fn test_swap_exact_input_single_step() {
 
     let proof = dummy_proof(111, 555);
     let proofs = array![proof];
-    let calldata = array![];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(777);
     pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 
@@ -145,8 +166,21 @@ fn test_swap_exact_input_multi_step() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        222, 1001, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        800, 0, false, true, 600, 0, 1,
+        222,
+        1001,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        800,
+        0,
+        false,
+        true,
+        600,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -157,7 +191,7 @@ fn test_swap_exact_input_multi_step() {
 
     let proof = dummy_proof(222, 600);
     let proofs = array![proof];
-    let calldata = array![];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(800);
     pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 }
@@ -168,8 +202,21 @@ fn test_swap_crossing_ticks() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-2_i128).into());
     let outputs = build_swap_outputs(
-        333, 1002, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        801, 0, false, true, 700, 0, 1,
+        333,
+        1002,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        801,
+        0,
+        false,
+        true,
+        700,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -180,7 +227,7 @@ fn test_swap_crossing_ticks() {
 
     let proof = dummy_proof(333, 700);
     let proofs = array![proof];
-    let calldata = array![];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(801);
     pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 
@@ -194,16 +241,30 @@ fn test_swap_price_limits() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = u256_from_u128(0);
     let outputs = build_swap_outputs(
-        444, 1003, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        804, 0, false, true, 800, 0, 1,
+        444,
+        1003,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        804,
+        0,
+        false,
+        true,
+        800,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
     set_adapter_state(adapter_address, pool_address, sqrt_start, 0, 1000);
     let proof = dummy_proof(444, 800);
     let proofs = array![proof];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(804);
-    pool.swap_private(array![].span(), proofs.span(), output_proofs.span());
+    pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 }
 
 #[test]
@@ -212,8 +273,21 @@ fn test_swap_with_fees() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        555, 1004, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        900, 0, false, true, 9000, 0, 1,
+        555,
+        1004,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        900,
+        0,
+        false,
+        true,
+        9000,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -224,8 +298,9 @@ fn test_swap_with_fees() {
 
     let proof = dummy_proof(555, 9000);
     let proofs = array![proof];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(900);
-    pool.swap_private(array![].span(), proofs.span(), output_proofs.span());
+    pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 }
 
 #[test]
@@ -262,7 +337,8 @@ fn test_swap_limit_flag_mismatch() {
 
     let proof = dummy_proof(777, 888);
     let proofs = array![proof];
-    pool.swap_private(array![].span(), proofs.span(), array![].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), proofs.span(), array![].span());
 }
 
 #[test]
@@ -299,7 +375,8 @@ fn test_swap_limit_flag_missing() {
 
     let proof = dummy_proof(888, 999);
     let proofs = array![proof];
-    pool.swap_private(array![].span(), proofs.span(), array![].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), proofs.span(), array![].span());
 }
 
 #[test]
@@ -334,7 +411,8 @@ fn test_swap_output_proof_len_mismatch() {
 
     let proof = dummy_proof(888, 900);
     let proofs = array![proof];
-    pool.swap_private(array![].span(), proofs.span(), array![].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), proofs.span(), array![].span());
 }
 
 #[test]
@@ -369,7 +447,8 @@ fn test_swap_rejects_zero_note_count() {
 
     let proof = dummy_proof(999, 1111);
     let proofs = array![proof];
-    pool.swap_private(array![].span(), proofs.span(), array![].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), proofs.span(), array![].span());
 }
 
 #[test]
@@ -380,7 +459,8 @@ fn test_swap_reverts_on_invalid_proof() {
     verifier.set_should_verify(false);
     let proof = dummy_proof(1, 1);
     let proofs = array![proof];
-    pool.swap_private(array![].span(), proofs.span(), array![].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), proofs.span(), array![].span());
 }
 
 #[test]
@@ -390,8 +470,21 @@ fn test_swap_reverts_on_used_nullifier() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        666, 9999, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        802, 0, false, true, 901, 0, 1,
+        666,
+        9999,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        802,
+        0,
+        false,
+        true,
+        901,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -402,17 +495,32 @@ fn test_swap_reverts_on_used_nullifier() {
 
     let proof = dummy_proof(666, 901);
     let proofs = array![proof];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(802);
-    pool.swap_private(array![].span(), proofs.span(), output_proofs.span());
+    pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 
     let sqrt_end_second = tick_to_sqrt_ratio((-2_i128).into());
     let outputs_second = build_swap_outputs(
-        666, 9999, sqrt_end, sqrt_end_second, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        802, 0, false, true, 901, 0, 1,
+        666,
+        9999,
+        sqrt_end,
+        sqrt_end_second,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        802,
+        0,
+        false,
+        true,
+        901,
+        0,
+        1,
     );
     verifier.set_outputs(outputs_second.span());
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(802);
-    pool.swap_private(array![].span(), proofs.span(), output_proofs.span());
+    pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 }
 
 #[test]
@@ -422,8 +530,21 @@ fn test_swap_reverts_on_price_mismatch() {
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        777, 1005, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        803, 0, false, true, 902, 0, 1,
+        777,
+        1005,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        803,
+        0,
+        false,
+        true,
+        902,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -435,8 +556,9 @@ fn test_swap_reverts_on_price_mismatch() {
 
     let proof = dummy_proof(777, 902);
     let proofs = array![proof];
+    let calldata = swap_calldata(true);
     let output_proofs = output_proofs_for_commitment(803);
-    pool.swap_private(array![].span(), proofs.span(), output_proofs.span());
+    pool.swap_private(calldata.span(), proofs.span(), output_proofs.span());
 }
 
 #[fuzzer(runs: 24)]
@@ -453,9 +575,16 @@ fn test_swap_fuzz_basic(seed: u128) {
     let liquidity_before = seed % 1000;
     let commitment_in: felt252 = (seed % 100000 + 1).into();
     let nullifier: felt252 = (seed % 100000 + 2).into();
-    let output_commitment: felt252 =
-        if liquidity_before == 0 { 0 } else { (seed % 100000 + 3).into() };
-    let token_id_in: felt252 = if zero_for_one { 0 } else { 1 };
+    let output_commitment: felt252 = if liquidity_before == 0 {
+        0
+    } else {
+        (seed % 100000 + 3).into()
+    };
+    let token_id_in: felt252 = if zero_for_one {
+        0
+    } else {
+        1
+    };
     let outputs = build_swap_outputs(
         111,
         nullifier,
@@ -477,11 +606,16 @@ fn test_swap_fuzz_basic(seed: u128) {
     verifier.set_outputs(outputs.span());
 
     let adapter = MockPoolAdapterExternalDispatcher { contract_address: adapter_address };
-    let next_tick = if zero_for_one { -1 } else { 1 };
+    let next_tick = if zero_for_one {
+        -1
+    } else {
+        1
+    };
     adapter.set_next_tick(next_tick);
     set_adapter_state(adapter_address, pool_address, sqrt_start, 0, liquidity_before);
 
     let proof = dummy_proof(111, commitment_in);
     let output_proofs = output_proofs_for_commitment(output_commitment);
-    pool.swap_private(array![].span(), array![proof].span(), output_proofs.span());
+    let calldata = swap_calldata(zero_for_one);
+    pool.swap_private(calldata.span(), array![proof].span(), output_proofs.span());
 }

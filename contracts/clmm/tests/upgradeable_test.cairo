@@ -1,5 +1,5 @@
-use starknet::ClassHash;
 use snforge_std::{start_cheat_caller_address, stop_cheat_caller_address};
+use starknet::ClassHash;
 use crate::interfaces::upgradeable::IUpgradeableDispatcherTrait;
 use crate::tests::helper::{Deployer, DeployerTrait, default_owner};
 use crate::tests::mocks::mock_upgradeable::MockUpgradeable;

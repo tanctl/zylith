@@ -20,4 +20,4 @@ path = "contracts/lib.cairo"
 
 [dev-dependencies]
 cairo_test = "2.14.0"
-snforge_std = "0.54.0"
+snforge_std = "0.56.0"

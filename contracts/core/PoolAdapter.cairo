@@ -38,9 +38,7 @@ pub trait IPoolAdapter<TContractState> {
         token1: ContractAddress,
     );
 
-    fn apply_protocol_fee_withdraw(
-        ref self: TContractState, token: ContractAddress, amount: u128
-    );
+    fn apply_protocol_fee_withdraw(ref self: TContractState, token: ContractAddress, amount: u128);
 }
 
 #[starknet::contract]
@@ -184,9 +182,7 @@ pub mod PoolAdapter {
         }
 
         fn apply_protocol_fee_withdraw(
-            ref self: ContractState,
-            token: ContractAddress,
-            amount: u128,
+            ref self: ContractState, token: ContractAddress, amount: u128,
         ) {
             assert(get_caller_address() == self.authorized_pool.read(), 'NOT_AUTHORIZED');
             if amount == 0 {

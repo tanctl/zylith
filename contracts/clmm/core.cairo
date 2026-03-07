@@ -10,25 +10,24 @@ pub mod Core {
     };
     use starknet::storage_access::storage_base_address_from_felt252;
     use starknet::{ContractAddress, Store, get_caller_address};
-    use crate::interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use crate::components::owned::Owned as owned_component;
     use crate::components::upgradeable::{IHasInterface, Upgradeable as upgradeable_component};
+    use crate::constants::generated as generated_constants;
     use crate::interfaces::core::{
         GetPositionWithFeesResult, ICore, IExtensionDispatcher, IExtensionDispatcherTrait,
-        IForwardeeDispatcher, LockerState, SwapParameters,
-        UpdatePositionParameters,
+        IForwardeeDispatcher, LockerState, SwapParameters, UpdatePositionParameters,
     };
+    use crate::interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use crate::math::bitmap::{
         Bitmap, BitmapTrait, tick_to_word_and_bit_index, word_and_bit_index_to_tick,
     };
     use crate::math::fee::{accumulate_fee_amount, compute_fee};
     use crate::math::liquidity::liquidity_delta_to_amount_delta;
     use crate::math::swap::{is_price_increasing, swap_result};
+    use crate::math::ticks::constants::MAX_TICK_SPACING;
     use crate::math::ticks::{
         max_sqrt_ratio, max_tick, min_sqrt_ratio, min_tick, sqrt_ratio_to_tick, tick_to_sqrt_ratio,
     };
-    use crate::math::ticks::constants::MAX_TICK_SPACING;
-    use crate::constants::generated as generated_constants;
     use crate::types::bounds::{Bounds, BoundsTrait};
     use crate::types::call_points::CallPoints;
     use crate::types::delta::Delta;
@@ -43,8 +42,7 @@ pub mod Core {
 
     const MAX_SWAP_STEPS: usize = generated_constants::MAX_SWAP_STEPS;
     const MAX_INPUT_NOTES: usize = generated_constants::MAX_INPUT_NOTES;
-    const SWAP_PUBLIC_INPUTS_LEN: usize =
-        16 + (MAX_SWAP_STEPS * 6) + (2 * (MAX_INPUT_NOTES - 1));
+    const SWAP_PUBLIC_INPUTS_FIXED_LEN: usize = 16 + (2 * (MAX_INPUT_NOTES - 1));
     // protocol invariant: fee growth values must stay within the stark field
     const MAX_FEE_GROWTH: u256 = generated_constants::MAX_FEE_GROWTH;
     const HIGH_BIT_U128: u128 = 0x80000000000000000000000000000000;
@@ -66,7 +64,8 @@ pub mod Core {
         // transient state of the lockers, which always starts and ends at zero
         pub lock_count: u32,
         pub locker_token_deltas: Map<(u32, ContractAddress), i129>,
-        // the rest of transient state is accessed directly using Store::read and Store::write to save on hashes
+        // the rest of transient state is accessed directly using Store::read and Store::write to
+        // save on hashes
 
         // adapter allowed to mutate pool state via apply_* proof-driven entrypoints
         pub authorized_adapter: ContractAddress,
@@ -86,10 +85,12 @@ pub mod Core {
         pub tick_liquidity_net: Map<i129, u128>,
         pub tick_liquidity_delta: Map<i129, i129>,
         pub tick_fees_outside: Map<i129, FeesPerLiquidity>,
-        // only aggregate tick liquidity on-chain, per user positions are tracked off chain via commitments and direct position updates are disabled
+        // only aggregate tick liquidity on-chain, per user positions are tracked off chain via
+        // commitments and direct position updates are disabled
         pub positions: Map<(PoolKey, PositionKey), Position>,
         pub tick_bitmaps: Map<u128, Bitmap>,
-        // users may save balances in the singleton to avoid transfers, keyed by (owner, token, cache_key)
+        // users may save balances in the singleton to avoid transfers, keyed by (owner, token,
+        // cache_key)
         pub saved_balances: Map<SavedBalanceKey, u128>,
         // extensions must be registered before they are used in a pool key
         pub extension_call_points: Map<ContractAddress, CallPoints>,
@@ -294,10 +295,7 @@ pub mod Core {
             is_upper: bool,
             tick_spacing: u128,
         ) {
-            let liquidity_delta_current = self
-                .tick_liquidity_delta
-                .entry(index)
-                .read();
+            let liquidity_delta_current = self.tick_liquidity_delta.entry(index).read();
 
             let liquidity_net_current = self.tick_liquidity_net.entry(index).read();
             let next_liquidity_net = liquidity_net_current.add(liquidity_delta);
@@ -326,10 +324,7 @@ pub mod Core {
 
 
         fn prefix_next_initialized_tick(
-            self: @ContractState,
-            tick_spacing: u128,
-            from: i129,
-            skip_ahead: u128,
+            self: @ContractState, tick_spacing: u128, from: i129, skip_ahead: u128,
         ) -> (i129, bool) {
             assert(from < max_tick(), 'NEXT_FROM_MAX');
 
@@ -358,10 +353,7 @@ pub mod Core {
         }
 
         fn prefix_prev_initialized_tick(
-            self: @ContractState,
-            tick_spacing: u128,
-            from: i129,
-            skip_ahead: u128,
+            self: @ContractState, tick_spacing: u128, from: i129, skip_ahead: u128,
         ) -> (i129, bool) {
             assert(from >= min_tick(), 'PREV_FROM_MIN');
             let (word_index, bit_index) = tick_to_word_and_bit_index(from, tick_spacing);
@@ -381,11 +373,10 @@ pub mod Core {
                     if (skip_ahead == 0) {
                         (prev, false)
                     } else {
-                        self.prefix_prev_initialized_tick(
-                            tick_spacing,
-                            prev - i129 { mag: 1, sign: false },
-                            skip_ahead - 1,
-                        )
+                        self
+                            .prefix_prev_initialized_tick(
+                                tick_spacing, prev - i129 { mag: 1, sign: false }, skip_ahead - 1,
+                            )
                     }
                 },
             }
@@ -440,8 +431,7 @@ pub mod Core {
             assert(get_caller_address() == self.authorized_adapter.read(), 'NOT_AUTHORIZED');
             assert(self.pool_price.read().sqrt_ratio.is_zero(), 'ALREADY_INITIALIZED');
             assert(
-                (tick_spacing.is_non_zero()) & (tick_spacing <= MAX_TICK_SPACING),
-                'TICK_SPACING',
+                (tick_spacing.is_non_zero()) & (tick_spacing <= MAX_TICK_SPACING), 'TICK_SPACING',
             );
             let configured_spacing = self.configured_tick_spacing.read();
             if configured_spacing.is_zero() {
@@ -457,15 +447,17 @@ pub mod Core {
             assert(fee_growth_global_1 <= MAX_FEE_GROWTH, 'FEE1_MAX');
             self.pool_price.write(PoolPrice { sqrt_ratio: sqrt_price, tick });
             self.pool_liquidity.write(liquidity);
-            self.pool_fees.write(
-                FeesPerLiquidity { value0: fee_growth_global_0, value1: fee_growth_global_1 }
-            );
+            self
+                .pool_fees
+                .write(
+                    FeesPerLiquidity { value0: fee_growth_global_0, value1: fee_growth_global_1 },
+                );
         }
 
         // apply-only swap state update (proof-driven)
         fn apply_swap_state(ref self: ContractState, public_inputs: Span<u256>) {
             assert(get_caller_address() == self.authorized_adapter.read(), 'NOT_AUTHORIZED');
-            assert(public_inputs.len() == SWAP_PUBLIC_INPUTS_LEN, 'SWAP_INPUTS_LEN');
+            let swap_steps = infer_swap_steps(public_inputs.len());
 
             let sqrt_price_start: u256 = *public_inputs.at(3);
             let sqrt_price_end: u256 = *public_inputs.at(4);
@@ -505,20 +497,20 @@ pub mod Core {
             let mut fees_value1: u256 = fee_growth_global_1_before;
 
             let base: usize = 13;
-            for step_idx in 0..MAX_SWAP_STEPS {
+            for step_idx in 0..swap_steps {
                 let step_sqrt_price_next: u256 = *public_inputs.at(base + step_idx);
-                let step_sqrt_price_limit: u256 = *public_inputs.at(base + MAX_SWAP_STEPS + step_idx);
+                let step_sqrt_price_limit: u256 = *public_inputs.at(base + swap_steps + step_idx);
                 let step_tick_next_i32 = decode_i32_signed(
-                    *public_inputs.at(base + (MAX_SWAP_STEPS * 2) + step_idx),
+                    *public_inputs.at(base + (swap_steps * 2) + step_idx),
                 )
                     .expect('STEP_TICK_RANGE');
                 let step_liquidity_net = signed_u256_to_i129(
-                    *public_inputs.at(base + (MAX_SWAP_STEPS * 3) + step_idx),
+                    *public_inputs.at(base + (swap_steps * 3) + step_idx),
                 );
-                let step_fee_growth_global_0: u256 =
-                    *public_inputs.at(base + (MAX_SWAP_STEPS * 4) + step_idx);
-                let step_fee_growth_global_1: u256 =
-                    *public_inputs.at(base + (MAX_SWAP_STEPS * 5) + step_idx);
+                let step_fee_growth_global_0: u256 = *public_inputs
+                    .at(base + (swap_steps * 4) + step_idx);
+                let step_fee_growth_global_1: u256 = *public_inputs
+                    .at(base + (swap_steps * 5) + step_idx);
                 assert(step_fee_growth_global_0 <= MAX_FEE_GROWTH, 'FEE0_MAX');
                 assert(step_fee_growth_global_1 <= MAX_FEE_GROWTH, 'FEE1_MAX');
 
@@ -576,11 +568,12 @@ pub mod Core {
                 let crossed = step_sqrt_price_next == step_sqrt_price_limit;
                 if crossed {
                     sqrt_ratio = step_sqrt_price_next;
-                    tick = if zero_for_one {
-                        expected_tick - i129 { mag: 1, sign: false }
-                    } else {
-                        expected_tick
-                    };
+                    tick =
+                        if zero_for_one {
+                            expected_tick - i129 { mag: 1, sign: false }
+                        } else {
+                            expected_tick
+                        };
 
                     if is_initialized {
                         if zero_for_one {
@@ -638,7 +631,9 @@ pub mod Core {
             assert(tick_aligned(tick_lower_i129, tick_spacing), 'TICK_LOWER_ALIGNMENT');
             assert(tick_aligned(tick_upper_i129, tick_spacing), 'TICK_UPPER_ALIGNMENT');
             let (liq_sign, liq_mag) = signed_u256_to_sign_mag(liquidity_delta);
-            let liquidity_delta_i129 = i129 { mag: liq_mag, sign: liq_sign & liq_mag.is_non_zero() };
+            let liquidity_delta_i129 = i129 {
+                mag: liq_mag, sign: liq_sign & liq_mag.is_non_zero(),
+            };
             assert(liq_mag.is_non_zero(), 'LIQ_DELTA_ZERO');
 
             let price = self.pool_price.read();
@@ -661,10 +656,7 @@ pub mod Core {
             self
                 .pool_fees
                 .write(
-                    FeesPerLiquidity {
-                        value0: fee_growth_global_0,
-                        value1: fee_growth_global_1,
-                    },
+                    FeesPerLiquidity { value0: fee_growth_global_0, value1: fee_growth_global_1 },
                 );
 
             if (protocol_fee_0.is_non_zero()) {
@@ -972,7 +964,9 @@ pub mod Core {
             // bounds must be multiple of tick spacing
             params.bounds.check_valid(pool_key.tick_spacing);
             let (liq_sign, liq_mag) = signed_u256_to_sign_mag(params.liquidity_delta);
-            let liquidity_delta_i129 = i129 { mag: liq_mag, sign: liq_sign & liq_mag.is_non_zero() };
+            let liquidity_delta_i129 = i129 {
+                mag: liq_mag, sign: liq_sign & liq_mag.is_non_zero(),
+            };
 
             // pool must be initialized
             let mut price = self.pool_price.read();
@@ -1064,8 +1058,14 @@ pub mod Core {
                 self.positions.write((pool_key, position_key), Zero::zero());
             }
 
-            self.update_tick(params.bounds.lower, liquidity_delta_i129, false, pool_key.tick_spacing);
-            self.update_tick(params.bounds.upper, liquidity_delta_i129, true, pool_key.tick_spacing);
+            self
+                .update_tick(
+                    params.bounds.lower, liquidity_delta_i129, false, pool_key.tick_spacing,
+                );
+            self
+                .update_tick(
+                    params.bounds.upper, liquidity_delta_i129, true, pool_key.tick_spacing,
+                );
 
             // update pool liquidity if it changed
             if ((price.tick >= params.bounds.lower) & (price.tick < params.bounds.upper)) {
@@ -1169,13 +1169,15 @@ pub mod Core {
 
             while (amount_remaining.is_non_zero() & (sqrt_ratio != params.sqrt_ratio_limit)) {
                 let (next_tick, is_initialized) = if (increasing) {
-                    self.prefix_next_initialized_tick(
-                        pool_key.tick_spacing, tick, params.skip_ahead,
-                    )
+                    self
+                        .prefix_next_initialized_tick(
+                            pool_key.tick_spacing, tick, params.skip_ahead,
+                        )
                 } else {
-                    self.prefix_prev_initialized_tick(
-                        pool_key.tick_spacing, tick, params.skip_ahead,
-                    )
+                    self
+                        .prefix_prev_initialized_tick(
+                            pool_key.tick_spacing, tick, params.skip_ahead,
+                        )
                 };
 
                 let next_tick_sqrt_ratio = tick_to_sqrt_ratio(next_tick);
@@ -1233,7 +1235,8 @@ pub mod Core {
 
                     if (is_initialized) {
                         let liquidity_delta = self.tick_liquidity_delta.read(next_tick);
-                        // update our working liquidity based on the direction we are crossing the tick
+                        // update our working liquidity based on the direction we are crossing the
+                        // tick
                         if (increasing) {
                             liquidity = liquidity.add(liquidity_delta);
                         } else {
@@ -1245,7 +1248,9 @@ pub mod Core {
                             .write(fees_per_liquidity - tick_fpl_storage_address.read());
                     }
                 } else if sqrt_ratio != swap_result.sqrt_ratio_next {
-                    // the price moved but it did not cross the next tick, we must only update the tick in case the price moved, otherwise we may transition the tick incorrectly
+                    // the price moved but it did not cross the next tick, we must only update the
+                    // tick in case the price moved, otherwise we may transition the tick
+                    // incorrectly
                     sqrt_ratio = swap_result.sqrt_ratio_next;
                     tick = sqrt_ratio_to_tick(sqrt_ratio);
                 };
@@ -1296,7 +1301,8 @@ pub mod Core {
             let (id, locker) = self.require_locker();
             bind_pool_key(ref self, pool_key);
 
-            // this method is only allowed for the extension of a pool, because otherwise it complicates extension implementation considerably
+            // this method is only allowed for the extension of a pool, because otherwise it
+            // complicates extension implementation considerably
             assert(locker == pool_key.extension, 'NOT_EXTENSION');
 
             self
@@ -1331,14 +1337,14 @@ pub mod Core {
     }
 
     fn bind_pool_identity(
-        ref self: ContractState, token0: ContractAddress, token1: ContractAddress, tick_spacing: u128,
+        ref self: ContractState,
+        token0: ContractAddress,
+        token1: ContractAddress,
+        tick_spacing: u128,
     ) {
         assert(token0 < token1, 'TOKEN_ORDER');
         assert(token0.is_non_zero(), 'TOKEN_NON_ZERO');
-        assert(
-            (tick_spacing.is_non_zero()) & (tick_spacing <= MAX_TICK_SPACING),
-            'TICK_SPACING',
-        );
+        assert((tick_spacing.is_non_zero()) & (tick_spacing <= MAX_TICK_SPACING), 'TICK_SPACING');
 
         let configured_token0 = self.configured_token0.read();
         if configured_token0.is_zero() {
@@ -1397,7 +1403,9 @@ pub mod Core {
                 assert(self.configured_fee.read() == pool_key.fee, 'FEE_MISMATCH');
             }
             if self.extension_bound.read() {
-                assert(self.configured_extension.read() == pool_key.extension, 'EXTENSION_MISMATCH');
+                assert(
+                    self.configured_extension.read() == pool_key.extension, 'EXTENSION_MISMATCH',
+                );
             }
         }
     }
@@ -1405,6 +1413,15 @@ pub mod Core {
     fn assert_high_zero(input: u256) -> u256 {
         assert(input.high == 0, 'UNEXPECTED_U256_HIGH');
         input
+    }
+
+    fn infer_swap_steps(public_inputs_len: usize) -> usize {
+        assert(public_inputs_len >= SWAP_PUBLIC_INPUTS_FIXED_LEN, 'SWAP_INPUTS_LEN');
+        let dynamic_len = public_inputs_len - SWAP_PUBLIC_INPUTS_FIXED_LEN;
+        assert(dynamic_len % 6 == 0, 'SWAP_INPUTS_LEN');
+        let swap_steps = dynamic_len / 6;
+        assert((swap_steps == 4) | (swap_steps == 8), 'SWAP_INPUTS_LEN');
+        swap_steps
     }
 
     fn decode_bool(input: u256) -> bool {

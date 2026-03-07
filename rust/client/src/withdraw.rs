@@ -39,13 +39,17 @@ impl<A: ConnectedAccount + Sync> WithdrawClient<A> {
 
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<TxHash, ClientError> {
         if request.token_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("token address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "token address is zero".to_string(),
+            ));
         }
         if request.recipient == Felt::ZERO {
             return Err(ClientError::InvalidInput("recipient is zero".to_string()));
         }
         if self.shielded_notes_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("shielded notes address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "shielded notes address is zero".to_string(),
+            ));
         }
         let commitment = crate::notes::compute_commitment(&request.note, request.token_id)?;
         if commitment != request.merkle_proof.commitment {

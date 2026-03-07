@@ -2,8 +2,8 @@ use core::num::traits::Zero;
 use crate::math::liquidity::liquidity_delta_to_amount_delta;
 use crate::math::max_liquidity::{max_liquidity, max_liquidity_for_token0, max_liquidity_for_token1};
 use crate::math::ticks::{max_sqrt_ratio, min_sqrt_ratio, tick_to_sqrt_ratio};
-use crate::types::i129::i129;
 use crate::tests::helper::i129_to_signed_u256;
+use crate::types::i129::i129;
 
 #[test]
 fn test_max_liquidity_for_token0_max_at_full_range() {
@@ -131,10 +131,7 @@ fn test_liquidity_operations_rounding_increases_liquidity_in_range() {
     let sqrt_ratio_lower = tick_to_sqrt_ratio(i129 { mag: 10, sign: true });
     let sqrt_ratio_upper = tick_to_sqrt_ratio(i129 { mag: 10, sign: false });
     let delta = liquidity_delta_to_amount_delta(
-        sqrt_ratio,
-        i129_to_signed_u256(liquidity_delta),
-        sqrt_ratio_lower,
-        sqrt_ratio_upper,
+        sqrt_ratio, i129_to_signed_u256(liquidity_delta), sqrt_ratio_lower, sqrt_ratio_upper,
     );
     assert(delta.amount0 == i129 { mag: 1, sign: false }, 'amount0');
     assert(delta.amount1 == i129 { mag: 1, sign: false }, 'amount1');
@@ -156,10 +153,7 @@ fn test_liquidity_operations_rounding_increases_liquidity_price_below() {
     let sqrt_ratio_lower = tick_to_sqrt_ratio(i129 { mag: 10, sign: true });
     let sqrt_ratio_upper = tick_to_sqrt_ratio(i129 { mag: 10, sign: false });
     let delta = liquidity_delta_to_amount_delta(
-        sqrt_ratio,
-        i129_to_signed_u256(liquidity_delta),
-        sqrt_ratio_lower,
-        sqrt_ratio_upper,
+        sqrt_ratio, i129_to_signed_u256(liquidity_delta), sqrt_ratio_lower, sqrt_ratio_upper,
     );
     assert(delta.amount0 == i129 { mag: 1, sign: false }, 'amount0');
     assert(delta.amount1.is_zero(), 'amount1');
@@ -181,10 +175,7 @@ fn test_liquidity_operations_rounding_increases_liquidity_price_above() {
     let sqrt_ratio_lower = tick_to_sqrt_ratio(i129 { mag: 10, sign: true });
     let sqrt_ratio_upper = tick_to_sqrt_ratio(i129 { mag: 10, sign: false });
     let delta = liquidity_delta_to_amount_delta(
-        sqrt_ratio,
-        i129_to_signed_u256(liquidity_delta),
-        sqrt_ratio_lower,
-        sqrt_ratio_upper,
+        sqrt_ratio, i129_to_signed_u256(liquidity_delta), sqrt_ratio_lower, sqrt_ratio_upper,
     );
     assert(delta.amount0.is_zero(), 'amount0');
     assert(delta.amount1 == i129 { mag: 1, sign: false }, 'amount1');

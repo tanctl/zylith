@@ -12,19 +12,27 @@ fn main() {
     println!("cargo:rerun-if-changed={}", script.display());
     println!(
         "cargo:rerun-if-changed={}",
-        repo_root.join("contracts/constants/generated.cairo").display()
+        repo_root
+            .join("contracts/constants/generated.cairo")
+            .display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        repo_root.join("circuits/constants/generated.circom").display()
+        repo_root
+            .join("circuits/constants/generated.circom")
+            .display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        repo_root.join("rust/client/src/generated_constants.rs").display()
+        repo_root
+            .join("rust/client/src/generated_constants.rs")
+            .display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        repo_root.join("rust/asp/src/generated_constants.rs").display()
+        repo_root
+            .join("rust/asp/src/generated_constants.rs")
+            .display()
     );
 
     let status = Command::new("python3")

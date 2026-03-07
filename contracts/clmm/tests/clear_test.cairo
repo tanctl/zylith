@@ -1,6 +1,5 @@
-use starknet::ContractAddress;
-use starknet::SyscallResultTrait;
-use snforge_std::{declare, start_cheat_caller_address, ContractClassTrait, DeclareResultTrait};
+use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
+use starknet::{ContractAddress, SyscallResultTrait};
 use crate::components::clear::{IClearDispatcher, IClearDispatcherTrait};
 use crate::interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
 use crate::tests::helper::{Deployer, DeployerTrait};

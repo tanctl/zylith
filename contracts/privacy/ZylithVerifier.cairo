@@ -10,15 +10,30 @@ const VK_LIQ_REMOVE: felt252 = 'LIQ_REMOVE';
 const VK_LIQ_CLAIM: felt252 = 'LIQ_CLAIM';
 const VK_DEPOSIT: felt252 = 'DEPOSIT';
 const VK_WITHDRAW: felt252 = 'WITHDRAW';
+const SWAP_STEPS_PREFIX: felt252 = 'SWAP_STEPS';
+const SWAP_STEPS_4: usize = 4;
+const SWAP_STEPS_8: usize = 8;
+const SWAP_DIR_ZERO_FOR_ONE: felt252 = 1;
+const SWAP_DIR_ONE_FOR_ZERO: felt252 = 0;
+const VK_SWAP_ZFO_4: felt252 = 'SWAP_ZFO_4';
+const VK_SWAP_ZFO_8: felt252 = 'SWAP_ZFO_8';
+const VK_SWAP_ZFO_16: felt252 = 'SWAP_ZFO_16';
+const VK_SWAP_OFZ_4: felt252 = 'SWAP_OFZ_4';
+const VK_SWAP_OFZ_8: felt252 = 'SWAP_OFZ_8';
+const VK_SWAP_OFZ_16: felt252 = 'SWAP_OFZ_16';
+const VK_SWAP_XO_ZFO_4: felt252 = 'SWAP_XO_ZFO_4';
+const VK_SWAP_XO_ZFO_8: felt252 = 'SWAP_XO_ZFO_8';
+const VK_SWAP_XO_ZFO_16: felt252 = 'SWAP_XO_ZFO_16';
+const VK_SWAP_XO_OFZ_4: felt252 = 'SWAP_XO_OFZ_4';
+const VK_SWAP_XO_OFZ_8: felt252 = 'SWAP_XO_OFZ_8';
+const VK_SWAP_XO_OFZ_16: felt252 = 'SWAP_XO_OFZ_16';
 
 // public input lengths (including the leading proof-type tag)
-// This implementation currently supports up to 16 initialized-tick crossings per swap proof. Swaps exceeding this must be chunked or use future recursive proofs.
+// Witness arrays are sized to MAX_SWAP_STEPS, while accepted verifier variants are step-capped
+// (4/8).
 const MAX_SWAP_STEPS: usize = generated_constants::MAX_SWAP_STEPS;
 const MAX_INPUT_NOTES: usize = generated_constants::MAX_INPUT_NOTES;
-const SWAP_PUBLIC_INPUTS_LEN: usize =
-    16 + (MAX_SWAP_STEPS * 6) + (2 * (MAX_INPUT_NOTES - 1));
-const LIQUIDITY_BINDING_INPUTS_LEN: usize =
-    35 + (4 * (MAX_INPUT_NOTES - 1));
+const LIQUIDITY_BINDING_INPUTS_LEN: usize = 35 + (4 * (MAX_INPUT_NOTES - 1));
 const DEPOSIT_PUBLIC_INPUTS_LEN: usize = 4;
 const WITHDRAW_PUBLIC_INPUTS_LEN: usize = 6;
 const MAX_TICK_MAGNITUDE_I32: i32 = 88722883;
@@ -27,6 +42,10 @@ const MAX_FEE_GROWTH: u256 = generated_constants::MAX_FEE_GROWTH;
 const HIGH_BIT_U128: u128 = 0x80000000000000000000000000000000;
 const MAX_U128: u128 = 0xffffffffffffffffffffffffffffffff;
 const DEFAULT_VERIFIER_UPDATE_DELAY_SECS: u64 = 86400;
+
+fn swap_public_inputs_len(swap_steps: usize) -> usize {
+    16 + (swap_steps * 6) + (2 * (MAX_INPUT_NOTES - 1))
+}
 
 #[derive(Serde, Copy, Drop)]
 pub struct SwapPublicOutputs {
@@ -101,7 +120,7 @@ pub struct WithdrawPublicOutputs {
 #[starknet::interface]
 pub trait IGaragaVerifier<TContractState> {
     fn verify_groth16_proof_bn254(
-        self: @TContractState, calldata: Span<felt252>
+        self: @TContractState, calldata: Span<felt252>,
     ) -> Option<Span<u256>>;
 }
 
@@ -109,16 +128,33 @@ pub trait IGaragaVerifier<TContractState> {
 pub trait IZylithVerifier<TContractState> {
     fn verify_private_swap(self: @TContractState, calldata: Span<felt252>) -> Option<Span<u256>>;
     fn verify_private_swap_exact_out(
-        self: @TContractState, calldata: Span<felt252>
+        self: @TContractState, calldata: Span<felt252>,
     ) -> Option<Span<u256>>;
-    fn verify_private_liquidity_add(self: @TContractState, calldata: Span<felt252>) -> Option<Span<u256>>;
-    fn verify_private_liquidity_remove(self: @TContractState, calldata: Span<felt252>) -> Option<Span<u256>>;
-    fn verify_private_liquidity_claim(self: @TContractState, calldata: Span<felt252>) -> Option<Span<u256>>;
-    fn verify_deposit(self: @TContractState, calldata: Span<felt252>) -> Option<DepositPublicOutputs>;
-    fn verify_withdraw(self: @TContractState, calldata: Span<felt252>) -> Option<WithdrawPublicOutputs>;
+    fn verify_private_liquidity_add(
+        self: @TContractState, calldata: Span<felt252>,
+    ) -> Option<Span<u256>>;
+    fn verify_private_liquidity_remove(
+        self: @TContractState, calldata: Span<felt252>,
+    ) -> Option<Span<u256>>;
+    fn verify_private_liquidity_claim(
+        self: @TContractState, calldata: Span<felt252>,
+    ) -> Option<Span<u256>>;
+    fn verify_deposit(
+        self: @TContractState, calldata: Span<felt252>,
+    ) -> Option<DepositPublicOutputs>;
+    fn verify_withdraw(
+        self: @TContractState, calldata: Span<felt252>,
+    ) -> Option<WithdrawPublicOutputs>;
 
     fn update_swap_verifier(ref self: TContractState, new_address: ContractAddress);
     fn update_swap_exact_out_verifier(ref self: TContractState, new_address: ContractAddress);
+    fn update_swap_verifier_variant(
+        ref self: TContractState,
+        swap_steps: usize,
+        zero_for_one: bool,
+        exact_out: bool,
+        new_address: ContractAddress,
+    );
     fn update_liquidity_add_verifier(ref self: TContractState, new_address: ContractAddress);
     fn update_liquidity_remove_verifier(ref self: TContractState, new_address: ContractAddress);
     fn update_liquidity_claim_verifier(ref self: TContractState, new_address: ContractAddress);
@@ -129,19 +165,24 @@ pub trait IZylithVerifier<TContractState> {
 
 #[starknet::contract]
 pub mod ZylithVerifier {
-    use super::{
-        ContractAddress, IGaragaVerifierDispatcher, IGaragaVerifierDispatcherTrait, IZylithVerifier,
-        DepositPublicOutputs, VK_DEPOSIT, VK_LIQ_ADD, VK_LIQ_CLAIM, VK_LIQ_REMOVE, VK_SWAP,
-        VK_SWAP_EXACT_OUT, VK_WITHDRAW, WithdrawPublicOutputs, SWAP_PUBLIC_INPUTS_LEN,
-        LIQUIDITY_BINDING_INPUTS_LEN, DEPOSIT_PUBLIC_INPUTS_LEN, WITHDRAW_PUBLIC_INPUTS_LEN,
-        MAX_SWAP_STEPS, MAX_INPUT_NOTES, MAX_TICK_MAGNITUDE_I32, MIN_TICK_MINUS_ONE_I32,
-        MAX_FEE_GROWTH, HIGH_BIT_U128, MAX_U128, DEFAULT_VERIFIER_UPDATE_DELAY_SECS,
-    };
+    use core::array::{ArrayTrait, SpanTrait};
     use core::num::traits::Zero;
-    use crate::clmm::components::owned::Owned as owned_component;
     use core::traits::TryInto;
     use starknet::get_block_timestamp;
     use starknet::storage::{Map, StorageMapReadAccess, StorageMapWriteAccess};
+    use crate::clmm::components::owned::Owned as owned_component;
+    use super::{
+        ContractAddress, DEFAULT_VERIFIER_UPDATE_DELAY_SECS, DEPOSIT_PUBLIC_INPUTS_LEN,
+        DepositPublicOutputs, HIGH_BIT_U128, IGaragaVerifierDispatcher,
+        IGaragaVerifierDispatcherTrait, IZylithVerifier, LIQUIDITY_BINDING_INPUTS_LEN,
+        MAX_FEE_GROWTH, MAX_INPUT_NOTES, MAX_TICK_MAGNITUDE_I32, MAX_U128, MIN_TICK_MINUS_ONE_I32,
+        SWAP_DIR_ONE_FOR_ZERO, SWAP_DIR_ZERO_FOR_ONE, SWAP_STEPS_4, SWAP_STEPS_8, SWAP_STEPS_PREFIX,
+        VK_DEPOSIT, VK_LIQ_ADD, VK_LIQ_CLAIM, VK_LIQ_REMOVE, VK_SWAP, VK_SWAP_EXACT_OUT,
+        VK_SWAP_OFZ_16, VK_SWAP_OFZ_4, VK_SWAP_OFZ_8, VK_SWAP_XO_OFZ_16, VK_SWAP_XO_OFZ_4,
+        VK_SWAP_XO_OFZ_8, VK_SWAP_XO_ZFO_16, VK_SWAP_XO_ZFO_4, VK_SWAP_XO_ZFO_8, VK_SWAP_ZFO_16,
+        VK_SWAP_ZFO_4, VK_SWAP_ZFO_8, VK_WITHDRAW, WITHDRAW_PUBLIC_INPUTS_LEN,
+        WithdrawPublicOutputs, swap_public_inputs_len,
+    };
 
     component!(path: owned_component, storage: owned, event: OwnedEvent);
     #[abi(embed_v0)]
@@ -150,8 +191,18 @@ pub mod ZylithVerifier {
 
     #[storage]
     struct Storage {
-        swap_verifier: ContractAddress,
-        swap_exact_out_verifier: ContractAddress,
+        swap_verifier_zero_for_one_4: ContractAddress,
+        swap_verifier_zero_for_one_8: ContractAddress,
+        swap_verifier_zero_for_one: ContractAddress,
+        swap_verifier_one_for_zero_4: ContractAddress,
+        swap_verifier_one_for_zero_8: ContractAddress,
+        swap_verifier_one_for_zero: ContractAddress,
+        swap_exact_out_verifier_zero_for_one_4: ContractAddress,
+        swap_exact_out_verifier_zero_for_one_8: ContractAddress,
+        swap_exact_out_verifier_zero_for_one: ContractAddress,
+        swap_exact_out_verifier_one_for_zero_4: ContractAddress,
+        swap_exact_out_verifier_one_for_zero_8: ContractAddress,
+        swap_exact_out_verifier_one_for_zero: ContractAddress,
         liquidity_add_verifier: ContractAddress,
         liquidity_remove_verifier: ContractAddress,
         liquidity_claim_verifier: ContractAddress,
@@ -192,8 +243,18 @@ pub mod ZylithVerifier {
         assert(deposit_verifier.is_non_zero(), 'VERIFIER_ZERO');
         assert(withdraw_verifier.is_non_zero(), 'VERIFIER_ZERO');
         self.initialize_owned(owner);
-        self.swap_verifier.write(swap_verifier);
-        self.swap_exact_out_verifier.write(swap_exact_out_verifier);
+        self.swap_verifier_zero_for_one_4.write(swap_verifier);
+        self.swap_verifier_zero_for_one_8.write(swap_verifier);
+        self.swap_verifier_zero_for_one.write(swap_verifier);
+        self.swap_verifier_one_for_zero_4.write(swap_verifier);
+        self.swap_verifier_one_for_zero_8.write(swap_verifier);
+        self.swap_verifier_one_for_zero.write(swap_verifier);
+        self.swap_exact_out_verifier_zero_for_one_4.write(swap_exact_out_verifier);
+        self.swap_exact_out_verifier_zero_for_one_8.write(swap_exact_out_verifier);
+        self.swap_exact_out_verifier_zero_for_one.write(swap_exact_out_verifier);
+        self.swap_exact_out_verifier_one_for_zero_4.write(swap_exact_out_verifier);
+        self.swap_exact_out_verifier_one_for_zero_8.write(swap_exact_out_verifier);
+        self.swap_exact_out_verifier_one_for_zero.write(swap_exact_out_verifier);
         self.liquidity_add_verifier.write(liquidity_add_verifier);
         self.liquidity_remove_verifier.write(liquidity_remove_verifier);
         self.liquidity_claim_verifier.write(liquidity_claim_verifier);
@@ -204,28 +265,48 @@ pub mod ZylithVerifier {
 
     #[abi(embed_v0)]
     impl VerifierImpl of IZylithVerifier<ContractState> {
-        fn verify_private_swap(self: @ContractState, calldata: Span<felt252>) -> Option<Span<u256>> {
-            let verified_inputs = self.call_verifier(self.swap_verifier.read(), calldata)?;
-            let outputs = self.decode_swap_outputs(verified_inputs)?;
+        fn verify_private_swap(
+            self: @ContractState, calldata: Span<felt252>,
+        ) -> Option<Span<u256>> {
+            let (swap_steps, zero_for_one, proof_offset) = parse_swap_variant(calldata);
+            let verifier = self
+                .select_swap_verifier_for_steps(
+                    swap_steps, zero_for_one == SWAP_DIR_ZERO_FOR_ONE, false,
+                );
+            let proof_calldata = strip_swap_variant_prefix(calldata, proof_offset);
+            let verified_inputs = self.call_verifier(verifier, proof_calldata.span())?;
+            let verified_zero_for_one: felt252 = assert_high_zero(*verified_inputs.at(12))
+                .try_into()
+                .expect('ZFO_RANGE');
+            assert(verified_zero_for_one == zero_for_one, 'SWAP_DIR_MISMATCH');
+            let outputs = self.decode_swap_outputs(verified_inputs, swap_steps)?;
             let tag = tag_from_inputs(verified_inputs);
             assert(tag == VK_SWAP, 'SWAP_TAG_MISMATCH');
             Option::Some(outputs)
         }
 
         fn verify_private_swap_exact_out(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
-            let verified_inputs =
-                self.call_verifier(self.swap_exact_out_verifier.read(), calldata)?;
-            let outputs = self.decode_swap_outputs(verified_inputs)?;
+            let (swap_steps, zero_for_one, proof_offset) = parse_swap_variant(calldata);
+            let verifier = self
+                .select_swap_verifier_for_steps(
+                    swap_steps, zero_for_one == SWAP_DIR_ZERO_FOR_ONE, true,
+                );
+            let proof_calldata = strip_swap_variant_prefix(calldata, proof_offset);
+            let verified_inputs = self.call_verifier(verifier, proof_calldata.span())?;
+            let verified_zero_for_one: felt252 = assert_high_zero(*verified_inputs.at(12))
+                .try_into()
+                .expect('ZFO_RANGE');
+            assert(verified_zero_for_one == zero_for_one, 'SWAP_DIR_MISMATCH');
+            let outputs = self.decode_swap_outputs(verified_inputs, swap_steps)?;
             let tag = tag_from_inputs(verified_inputs);
             assert(tag == VK_SWAP_EXACT_OUT, 'SWAP_TAG_MISMATCH');
             Option::Some(outputs)
         }
 
         fn verify_private_liquidity_add(
-            self: @ContractState,
-            calldata: Span<felt252>,
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let verified_inputs = self.call_verifier(self.liquidity_add_verifier.read(), calldata)?;
             let outputs = self.decode_liquidity_outputs(verified_inputs)?;
@@ -238,11 +319,10 @@ pub mod ZylithVerifier {
         }
 
         fn verify_private_liquidity_remove(
-            self: @ContractState,
-            calldata: Span<felt252>,
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
-            let verified_inputs =
-                self.call_verifier(self.liquidity_remove_verifier.read(), calldata)?;
+            let verified_inputs = self
+                .call_verifier(self.liquidity_remove_verifier.read(), calldata)?;
             let outputs = self.decode_liquidity_outputs(verified_inputs)?;
             let tag = tag_from_liquidity_inputs(verified_inputs);
             assert(tag == VK_LIQ_REMOVE, 'LIQ_TAG_MISMATCH');
@@ -253,10 +333,10 @@ pub mod ZylithVerifier {
         }
 
         fn verify_private_liquidity_claim(
-            self: @ContractState,
-            calldata: Span<felt252>,
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
-            let verified_inputs = self.call_verifier(self.liquidity_claim_verifier.read(), calldata)?;
+            let verified_inputs = self
+                .call_verifier(self.liquidity_claim_verifier.read(), calldata)?;
             let outputs = self.decode_liquidity_outputs(verified_inputs)?;
             let tag = tag_from_liquidity_inputs(verified_inputs);
             assert(tag == VK_LIQ_CLAIM, 'LIQ_TAG_MISMATCH');
@@ -266,55 +346,62 @@ pub mod ZylithVerifier {
             Option::Some(outputs)
         }
 
-        fn verify_deposit(self: @ContractState, calldata: Span<felt252>) -> Option<DepositPublicOutputs> {
+        fn verify_deposit(
+            self: @ContractState, calldata: Span<felt252>,
+        ) -> Option<DepositPublicOutputs> {
             let verified_inputs = self.call_verifier(self.deposit_verifier.read(), calldata)?;
             self.decode_deposit_outputs(verified_inputs)
         }
 
-        fn verify_withdraw(self: @ContractState, calldata: Span<felt252>) -> Option<WithdrawPublicOutputs> {
+        fn verify_withdraw(
+            self: @ContractState, calldata: Span<felt252>,
+        ) -> Option<WithdrawPublicOutputs> {
             let verified_inputs = self.call_verifier(self.withdraw_verifier.read(), calldata)?;
             self.decode_withdraw_outputs(verified_inputs)
         }
 
         fn update_swap_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            // todo(post-mvp): re-enable with timelock + multisig governance.
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_swap_verifier_family(ref self, false, new_address);
         }
 
         fn update_swap_exact_out_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_swap_verifier_family(ref self, true, new_address);
+        }
+
+        fn update_swap_verifier_variant(
+            ref self: ContractState,
+            swap_steps: usize,
+            zero_for_one: bool,
+            exact_out: bool,
+            new_address: ContractAddress,
+        ) {
+            let kind = swap_verifier_kind(swap_steps, zero_for_one, exact_out);
+            update_verifier_with_delay(ref self, kind, new_address);
         }
 
         fn update_liquidity_add_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_verifier_with_delay(ref self, VK_LIQ_ADD, new_address);
         }
 
         fn update_liquidity_remove_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_verifier_with_delay(ref self, VK_LIQ_REMOVE, new_address);
         }
 
         fn update_liquidity_claim_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_verifier_with_delay(ref self, VK_LIQ_CLAIM, new_address);
         }
 
         fn update_deposit_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_verifier_with_delay(ref self, VK_DEPOSIT, new_address);
         }
 
         fn update_withdraw_verifier(ref self: ContractState, new_address: ContractAddress) {
-            let _ = new_address;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            update_verifier_with_delay(ref self, VK_WITHDRAW, new_address);
         }
 
         fn set_verifier_update_delay(ref self: ContractState, delay_secs: u64) {
-            let _ = delay_secs;
-            assert(false, 'VERIFIER_UPDATES_DISABLED');
+            self.require_owner();
+            self.verifier_update_delay.write(delay_secs);
         }
     }
 
@@ -330,8 +417,85 @@ pub mod ZylithVerifier {
         tag_u256.low.into()
     }
 
+    fn parse_swap_variant(calldata: Span<felt252>) -> (usize, felt252, usize) {
+        assert(calldata.len() >= 3, 'SWAP_VARIANT_REQUIRED');
+        let prefix = *calldata.at(0);
+        assert(prefix == SWAP_STEPS_PREFIX, 'SWAP_VARIANT_REQUIRED');
+        let swap_steps: usize = (*calldata.at(1)).try_into().expect('SWAP_STEPS_RANGE');
+        assert(
+            (swap_steps == SWAP_STEPS_4) | (swap_steps == SWAP_STEPS_8), 'SWAP_STEPS_UNSUPPORTED',
+        );
+        let zero_for_one = *calldata.at(2);
+        assert(
+            (zero_for_one == SWAP_DIR_ZERO_FOR_ONE) | (zero_for_one == SWAP_DIR_ONE_FOR_ZERO),
+            'SWAP_DIR_UNSUPPORTED',
+        );
+        (swap_steps, zero_for_one, 3)
+    }
+
+    fn strip_swap_variant_prefix(calldata: Span<felt252>, offset: usize) -> Array<felt252> {
+        let mut stripped: Array<felt252> = array![];
+        let mut idx = offset;
+        while idx < calldata.len() {
+            stripped.append(*calldata.at(idx));
+            idx += 1;
+        }
+        stripped
+    }
+
+    fn update_swap_verifier_family(
+        ref self: ContractState, exact_out: bool, new_address: ContractAddress,
+    ) {
+        update_verifier_with_delay(
+            ref self, swap_verifier_kind(SWAP_STEPS_4, true, exact_out), new_address,
+        );
+        update_verifier_with_delay(
+            ref self, swap_verifier_kind(SWAP_STEPS_8, true, exact_out), new_address,
+        );
+        update_verifier_with_delay(
+            ref self, swap_verifier_kind(SWAP_STEPS_4, false, exact_out), new_address,
+        );
+        update_verifier_with_delay(
+            ref self, swap_verifier_kind(SWAP_STEPS_8, false, exact_out), new_address,
+        );
+    }
+
+    fn swap_verifier_kind(swap_steps: usize, zero_for_one: bool, exact_out: bool) -> felt252 {
+        if exact_out {
+            if zero_for_one {
+                if swap_steps == SWAP_STEPS_4 {
+                    VK_SWAP_XO_ZFO_4
+                } else {
+                    assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                    VK_SWAP_XO_ZFO_8
+                }
+            } else {
+                if swap_steps == SWAP_STEPS_4 {
+                    VK_SWAP_XO_OFZ_4
+                } else {
+                    assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                    VK_SWAP_XO_OFZ_8
+                }
+            }
+        } else if zero_for_one {
+            if swap_steps == SWAP_STEPS_4 {
+                VK_SWAP_ZFO_4
+            } else {
+                assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                VK_SWAP_ZFO_8
+            }
+        } else {
+            if swap_steps == SWAP_STEPS_4 {
+                VK_SWAP_OFZ_4
+            } else {
+                assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                VK_SWAP_OFZ_8
+            }
+        }
+    }
+
     fn update_verifier_with_delay(
-        ref self: ContractState, kind: felt252, new_address: ContractAddress
+        ref self: ContractState, kind: felt252, new_address: ContractAddress,
     ) {
         self.require_owner();
         assert(new_address.is_non_zero(), 'VERIFIER_ZERO');
@@ -355,10 +519,36 @@ pub mod ZylithVerifier {
     }
 
     fn set_verifier(ref self: ContractState, kind: felt252, address: ContractAddress) {
-        if kind == VK_SWAP {
-            self.swap_verifier.write(address);
+        if kind == VK_SWAP_ZFO_4 {
+            self.swap_verifier_zero_for_one_4.write(address);
+        } else if kind == VK_SWAP_ZFO_8 {
+            self.swap_verifier_zero_for_one_8.write(address);
+        } else if kind == VK_SWAP_ZFO_16 {
+            self.swap_verifier_zero_for_one.write(address);
+        } else if kind == VK_SWAP_OFZ_4 {
+            self.swap_verifier_one_for_zero_4.write(address);
+        } else if kind == VK_SWAP_OFZ_8 {
+            self.swap_verifier_one_for_zero_8.write(address);
+        } else if kind == VK_SWAP_OFZ_16 {
+            self.swap_verifier_one_for_zero.write(address);
+        } else if kind == VK_SWAP_XO_ZFO_4 {
+            self.swap_exact_out_verifier_zero_for_one_4.write(address);
+        } else if kind == VK_SWAP_XO_ZFO_8 {
+            self.swap_exact_out_verifier_zero_for_one_8.write(address);
+        } else if kind == VK_SWAP_XO_ZFO_16 {
+            self.swap_exact_out_verifier_zero_for_one.write(address);
+        } else if kind == VK_SWAP_XO_OFZ_4 {
+            self.swap_exact_out_verifier_one_for_zero_4.write(address);
+        } else if kind == VK_SWAP_XO_OFZ_8 {
+            self.swap_exact_out_verifier_one_for_zero_8.write(address);
+        } else if kind == VK_SWAP_XO_OFZ_16 {
+            self.swap_exact_out_verifier_one_for_zero.write(address);
+        } else if kind == VK_SWAP {
+            self.swap_verifier_zero_for_one.write(address);
+            self.swap_verifier_one_for_zero.write(address);
         } else if kind == VK_SWAP_EXACT_OUT {
-            self.swap_exact_out_verifier.write(address);
+            self.swap_exact_out_verifier_zero_for_one.write(address);
+            self.swap_exact_out_verifier_one_for_zero.write(address);
         } else if kind == VK_LIQ_ADD {
             self.liquidity_add_verifier.write(address);
         } else if kind == VK_LIQ_REMOVE {
@@ -376,17 +566,53 @@ pub mod ZylithVerifier {
 
     #[generate_trait]
     impl VerifierHelpersImpl of VerifierHelpers {
+        fn select_swap_verifier_for_steps(
+            self: @ContractState, swap_steps: usize, zero_for_one: bool, exact_out: bool,
+        ) -> ContractAddress {
+            if exact_out {
+                if zero_for_one {
+                    if swap_steps == SWAP_STEPS_4 {
+                        self.swap_exact_out_verifier_zero_for_one_4.read()
+                    } else {
+                        assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                        self.swap_exact_out_verifier_zero_for_one_8.read()
+                    }
+                } else {
+                    if swap_steps == SWAP_STEPS_4 {
+                        self.swap_exact_out_verifier_one_for_zero_4.read()
+                    } else {
+                        assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                        self.swap_exact_out_verifier_one_for_zero_8.read()
+                    }
+                }
+            } else if zero_for_one {
+                if swap_steps == SWAP_STEPS_4 {
+                    self.swap_verifier_zero_for_one_4.read()
+                } else {
+                    assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                    self.swap_verifier_zero_for_one_8.read()
+                }
+            } else {
+                if swap_steps == SWAP_STEPS_4 {
+                    self.swap_verifier_one_for_zero_4.read()
+                } else {
+                    assert(swap_steps == SWAP_STEPS_8, 'SWAP_STEPS_UNSUPPORTED');
+                    self.swap_verifier_one_for_zero_8.read()
+                }
+            }
+        }
+
         fn call_verifier(
-            self: @ContractState,
-            verifier: ContractAddress,
-            calldata: Span<felt252>,
+            self: @ContractState, verifier: ContractAddress, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             IGaragaVerifierDispatcher { contract_address: verifier }
                 .verify_groth16_proof_bn254(calldata)
         }
 
-        fn decode_swap_outputs(self: @ContractState, public_inputs: Span<u256>) -> Option<Span<u256>> {
-            if public_inputs.len() != SWAP_PUBLIC_INPUTS_LEN {
+        fn decode_swap_outputs(
+            self: @ContractState, public_inputs: Span<u256>, swap_steps: usize,
+        ) -> Option<Span<u256>> {
+            if public_inputs.len() != swap_public_inputs_len(swap_steps) {
                 return Option::None;
             }
             // public input order (including domain tag):
@@ -410,7 +636,9 @@ pub mod ZylithVerifier {
             // [nullifier_extra_start..] nullifier_extra (notes 1..)
             // [commitment_extra_start..] commitment_extra (notes 1..)
             let mut idx: usize = 0;
-            let tag: felt252 = assert_high_zero(*public_inputs.at(idx)).try_into().expect('TAG_RANGE');
+            let tag: felt252 = assert_high_zero(*public_inputs.at(idx))
+                .try_into()
+                .expect('TAG_RANGE');
             if (tag != VK_SWAP) & (tag != VK_SWAP_EXACT_OUT) {
                 return Option::None;
             }
@@ -434,41 +662,45 @@ pub mod ZylithVerifier {
             idx += 1;
             assert_fee_growth_max(_fee_growth_global_0_before);
             assert_fee_growth_max(_fee_growth_global_1_before);
-            let _output_commitment: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('OUTPUT_RANGE');
+            let _output_commitment: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('OUTPUT_RANGE');
             idx += 1;
-            let _change_commitment: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('CHANGE_RANGE');
+            let _change_commitment: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('CHANGE_RANGE');
             idx += 1;
-            let is_limited: felt252 =
-                assert_high_zero(*public_inputs.at(idx)).try_into().expect('LIMIT_RANGE');
+            let is_limited: felt252 = assert_high_zero(*public_inputs.at(idx))
+                .try_into()
+                .expect('LIMIT_RANGE');
             assert((is_limited == 0) | (is_limited == 1), 'LIMIT_BOOL');
             idx += 1;
-            let zero_for_one: felt252 =
-                assert_high_zero(*public_inputs.at(idx)).try_into().expect('ZFO_RANGE');
+            let zero_for_one: felt252 = assert_high_zero(*public_inputs.at(idx))
+                .try_into()
+                .expect('ZFO_RANGE');
             assert((zero_for_one == 0) | (zero_for_one == 1), 'ZFO_BOOL');
-            let step_fee_growth_0_start = 13 + (MAX_SWAP_STEPS * 4);
-            let step_fee_growth_1_start = step_fee_growth_0_start + MAX_SWAP_STEPS;
+            let step_fee_growth_0_start = 13 + (swap_steps * 4);
+            let step_fee_growth_1_start = step_fee_growth_0_start + swap_steps;
             let mut step_idx: usize = 0;
-            while step_idx < MAX_SWAP_STEPS {
+            while step_idx < swap_steps {
                 let fee0 = *public_inputs.at(step_fee_growth_0_start + step_idx);
                 let fee1 = *public_inputs.at(step_fee_growth_1_start + step_idx);
                 assert_fee_growth_max(fee0);
                 assert_fee_growth_max(fee1);
                 step_idx += 1;
             }
-            let commitment_in_index: usize = 13 + (MAX_SWAP_STEPS * 6);
+            let commitment_in_index: usize = 13 + (swap_steps * 6);
             let token_id_index: usize = commitment_in_index + 1;
             let note_count_index: usize = token_id_index + 1;
             let nullifier_extra_start: usize = note_count_index + 1;
             let commitment_extra_start: usize = nullifier_extra_start + (MAX_INPUT_NOTES - 1);
 
-            let _commitment_in: felt252 =
-                (*public_inputs.at(commitment_in_index)).try_into().expect('COMMITMENT_IN_RANGE');
-            let _token_id_in: felt252 =
-                assert_high_zero(*public_inputs.at(token_id_index))
-                    .try_into()
-                    .expect('TOKEN_ID_RANGE');
+            let _commitment_in: felt252 = (*public_inputs.at(commitment_in_index))
+                .try_into()
+                .expect('COMMITMENT_IN_RANGE');
+            let _token_id_in: felt252 = assert_high_zero(*public_inputs.at(token_id_index))
+                .try_into()
+                .expect('TOKEN_ID_RANGE');
             let note_count_u256 = assert_high_zero(*public_inputs.at(note_count_index));
             let note_count_u128: u128 = note_count_u256.low;
             let note_count: usize = note_count_u128.try_into().expect('NOTE_COUNT_RANGE');
@@ -477,14 +709,14 @@ pub mod ZylithVerifier {
 
             let mut extra_idx: usize = 0;
             while extra_idx < (MAX_INPUT_NOTES - 1) {
-                let nullifier_extra: felt252 =
-                    (*public_inputs.at(nullifier_extra_start + extra_idx))
-                        .try_into()
-                        .expect('NULLIFIER_RANGE');
-                let commitment_extra: felt252 =
-                    (*public_inputs.at(commitment_extra_start + extra_idx))
-                        .try_into()
-                        .expect('COMMITMENT_RANGE');
+                let nullifier_extra: felt252 = (*public_inputs
+                    .at(nullifier_extra_start + extra_idx))
+                    .try_into()
+                    .expect('NULLIFIER_RANGE');
+                let commitment_extra: felt252 = (*public_inputs
+                    .at(commitment_extra_start + extra_idx))
+                    .try_into()
+                    .expect('COMMITMENT_RANGE');
                 if (extra_idx + 1) >= note_count {
                     assert(nullifier_extra == 0, 'NULLIFIER_EXTRA_NONZERO');
                     assert(commitment_extra == 0, 'COMMITMENT_EXTRA_NONZERO');
@@ -495,7 +727,7 @@ pub mod ZylithVerifier {
         }
 
         fn decode_liquidity_outputs(
-            self: @ContractState, public_inputs: Span<u256>
+            self: @ContractState, public_inputs: Span<u256>,
         ) -> Option<Span<u256>> {
             // public input order (including domain tag):
             // [0] proof type tag (VK_LIQ_ADD or VK_LIQ_REMOVE)
@@ -541,29 +773,37 @@ pub mod ZylithVerifier {
                 return Option::None;
             }
             let mut idx: usize = 0;
-            let tag: felt252 = assert_high_zero(*public_inputs.at(idx)).try_into().expect('TAG_RANGE');
+            let tag: felt252 = assert_high_zero(*public_inputs.at(idx))
+                .try_into()
+                .expect('TAG_RANGE');
             if (tag != VK_LIQ_ADD) & (tag != VK_LIQ_REMOVE) & (tag != VK_LIQ_CLAIM) {
                 return Option::None;
             }
             idx += 1;
-            let _merkle_root_token0: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('ROOT0_RANGE');
+            let _merkle_root_token0: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('ROOT0_RANGE');
             idx += 1;
-            let _merkle_root_token1: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('ROOT1_RANGE');
+            let _merkle_root_token1: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('ROOT1_RANGE');
             idx += 1;
-            let _merkle_root_position: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('ROOT_POSITION_RANGE');
+            let _merkle_root_position: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('ROOT_POSITION_RANGE');
             idx += 1;
             let _nullifier: felt252 = (*public_inputs.at(idx)).try_into().expect('NULLIFIER_RANGE');
             idx += 1;
             let _sqrt_price_start: u256 = *public_inputs.at(idx);
             idx += 1;
-            let tick_start: i32 = decode_i32_signed(*public_inputs.at(idx)).expect('TICK_START_RANGE');
+            let tick_start: i32 = decode_i32_signed(*public_inputs.at(idx))
+                .expect('TICK_START_RANGE');
             idx += 1;
-            let tick_lower: i32 = decode_i32_signed(*public_inputs.at(idx)).expect('TICK_LOWER_RANGE');
+            let tick_lower: i32 = decode_i32_signed(*public_inputs.at(idx))
+                .expect('TICK_LOWER_RANGE');
             idx += 1;
-            let tick_upper: i32 = decode_i32_signed(*public_inputs.at(idx)).expect('TICK_UPPER_RANGE');
+            let tick_upper: i32 = decode_i32_signed(*public_inputs.at(idx))
+                .expect('TICK_UPPER_RANGE');
             idx += 1;
             // allow min_tick - 1 for the current tick
             assert(tick_start >= MIN_TICK_MINUS_ONE_I32, 'TICK_START_MIN');
@@ -597,14 +837,17 @@ pub mod ZylithVerifier {
             assert_fee_growth_max(fee_growth_global_0);
             assert_fee_growth_max(fee_growth_global_1);
 
-            let _prev_position_commitment: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('POS_PREV_RANGE');
+            let _prev_position_commitment: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('POS_PREV_RANGE');
             idx += 1;
-            let _new_position_commitment: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('POS_NEW_RANGE');
+            let _new_position_commitment: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('POS_NEW_RANGE');
             idx += 1;
-            let _liquidity_commitment: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('LIQ_COMMITMENT_RANGE');
+            let _liquidity_commitment: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('LIQ_COMMITMENT_RANGE');
             idx += 1;
 
             let fee_growth_inside_0_before: u256 = *public_inputs.at(idx);
@@ -620,23 +863,29 @@ pub mod ZylithVerifier {
             assert_fee_growth_max(fee_growth_inside_0_after);
             assert_fee_growth_max(fee_growth_inside_1_after);
 
-            let _input_commitment_token0: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('IN0_RANGE');
+            let _input_commitment_token0: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('IN0_RANGE');
             idx += 1;
-            let _input_commitment_token1: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('IN1_RANGE');
+            let _input_commitment_token1: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('IN1_RANGE');
             idx += 1;
-            let _nullifier_token0: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('NULL0_RANGE');
+            let _nullifier_token0: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('NULL0_RANGE');
             idx += 1;
-            let _nullifier_token1: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('NULL1_RANGE');
+            let _nullifier_token1: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('NULL1_RANGE');
             idx += 1;
-            let _output_commitment_token0: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('OUT0_RANGE');
+            let _output_commitment_token0: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('OUT0_RANGE');
             idx += 1;
-            let _output_commitment_token1: felt252 =
-                (*public_inputs.at(idx)).try_into().expect('OUT1_RANGE');
+            let _output_commitment_token1: felt252 = (*public_inputs.at(idx))
+                .try_into()
+                .expect('OUT1_RANGE');
             idx += 1;
             let _protocol_fee_0 = assert_high_zero(*public_inputs.at(idx));
             idx += 1;
@@ -647,10 +896,8 @@ pub mod ZylithVerifier {
             idx += 1;
             let note_count1_u256 = assert_high_zero(*public_inputs.at(idx));
             idx += 1;
-            let note_count0: usize =
-                note_count0_u256.low.try_into().expect('NOTE_COUNT0_RANGE');
-            let note_count1: usize =
-                note_count1_u256.low.try_into().expect('NOTE_COUNT1_RANGE');
+            let note_count0: usize = note_count0_u256.low.try_into().expect('NOTE_COUNT0_RANGE');
+            let note_count1: usize = note_count1_u256.low.try_into().expect('NOTE_COUNT1_RANGE');
             assert(note_count0 <= MAX_INPUT_NOTES, 'NOTE_COUNT0_MAX');
             assert(note_count1 <= MAX_INPUT_NOTES, 'NOTE_COUNT1_MAX');
             if note_count0 == 0 {
@@ -701,7 +948,7 @@ pub mod ZylithVerifier {
         }
 
         fn decode_deposit_outputs(
-            self: @ContractState, public_inputs: Span<u256>
+            self: @ContractState, public_inputs: Span<u256>,
         ) -> Option<DepositPublicOutputs> {
             // public input order:
             // [0] proof type tag (VK_DEPOSIT)
@@ -711,7 +958,9 @@ pub mod ZylithVerifier {
             if public_inputs.len() != DEPOSIT_PUBLIC_INPUTS_LEN {
                 return Option::None;
             }
-            let tag: felt252 = assert_high_zero(*public_inputs.at(0)).try_into().expect('TAG_RANGE');
+            let tag: felt252 = assert_high_zero(*public_inputs.at(0))
+                .try_into()
+                .expect('TAG_RANGE');
             if tag != VK_DEPOSIT {
                 return Option::None;
             }
@@ -719,13 +968,15 @@ pub mod ZylithVerifier {
                 DepositPublicOutputs {
                     commitment: (*public_inputs.at(1)).try_into().expect('COMMITMENT_RANGE'),
                     amount: assert_high_zero(*public_inputs.at(2)),
-                    token_id: assert_high_zero(*public_inputs.at(3)).try_into().expect('TOKEN_ID_RANGE'),
+                    token_id: assert_high_zero(*public_inputs.at(3))
+                        .try_into()
+                        .expect('TOKEN_ID_RANGE'),
                 },
             )
         }
 
         fn decode_withdraw_outputs(
-            self: @ContractState, public_inputs: Span<u256>
+            self: @ContractState, public_inputs: Span<u256>,
         ) -> Option<WithdrawPublicOutputs> {
             // public input order:
             // [0] proof type tag (VK_WITHDRAW)
@@ -737,19 +988,24 @@ pub mod ZylithVerifier {
             if public_inputs.len() != WITHDRAW_PUBLIC_INPUTS_LEN {
                 return Option::None;
             }
-            let tag: felt252 = assert_high_zero(*public_inputs.at(0)).try_into().expect('TAG_RANGE');
+            let tag: felt252 = assert_high_zero(*public_inputs.at(0))
+                .try_into()
+                .expect('TAG_RANGE');
             if tag != VK_WITHDRAW {
                 return Option::None;
             }
-            let recipient_felt: felt252 =
-                (*public_inputs.at(5)).try_into().expect('RECIPIENT_RANGE');
+            let recipient_felt: felt252 = (*public_inputs.at(5))
+                .try_into()
+                .expect('RECIPIENT_RANGE');
             let recipient: ContractAddress = recipient_felt.try_into().expect('RECIPIENT_ADDR');
             Option::Some(
                 WithdrawPublicOutputs {
                     commitment: (*public_inputs.at(1)).try_into().expect('COMMITMENT_RANGE'),
                     nullifier: (*public_inputs.at(2)).try_into().expect('NULLIFIER_RANGE'),
                     amount: assert_high_zero(*public_inputs.at(3)),
-                    token_id: assert_high_zero(*public_inputs.at(4)).try_into().expect('TOKEN_ID_RANGE'),
+                    token_id: assert_high_zero(*public_inputs.at(4))
+                        .try_into()
+                        .expect('TOKEN_ID_RANGE'),
                     recipient,
                 },
             )

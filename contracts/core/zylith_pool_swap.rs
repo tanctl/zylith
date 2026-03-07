@@ -9,11 +9,12 @@ use crate::clmm::math::ticks::{min_tick, max_tick, sqrt_ratio_to_tick};
 use crate::clmm::types::i129::i129;
 use crate::constants::generated as generated_constants;
 
-// this implementation currently supports up to 16 initialized-tick crossings per swap proof. swaps exceeding this must be chunked or use future recursive proofs.
+// witness arrays remain MAX_SWAP_STEPS-sized; accepted verifier variants are step-capped (4/8).
 const MAX_SWAP_STEPS: usize = generated_constants::MAX_SWAP_STEPS;
 const MAX_INPUT_NOTES: usize = generated_constants::MAX_INPUT_NOTES;
 const VK_SWAP: felt252 = 'SWAP';
 const VK_SWAP_EXACT_OUT: felt252 = 'SWAP_EXACT_OUT';
+const SWAP_STEPS_PREFIX: felt252 = 'SWAP_STEPS';
 
 #[starknet::interface]
 pub trait IShieldedNotes<TContractState> {
@@ -78,6 +79,7 @@ fn swap_private_with_verifier(
     let notes = IShieldedNotesDispatcher { contract_address: state.shielded_notes.read() };
     let verifier = IZylithVerifierDispatcher { contract_address: state.verifier.read() };
     let config: crate::core::ZylithPool::PoolConfig = state.pool_config.read();
+    let swap_steps = swap_steps_from_verifier_calldata(calldata);
 
     notes.flush_pending_roots();
 
@@ -123,9 +125,9 @@ fn swap_private_with_verifier(
     let zero_for_one: bool = zero_for_one_felt == 1;
     let mut limited_hit = false;
     let mut step_next_index: usize = 13;
-    let mut step_limit_index: usize = 13 + MAX_SWAP_STEPS;
+    let mut step_limit_index: usize = 13 + swap_steps;
     let mut step_idx: usize = 0;
-    while step_idx < MAX_SWAP_STEPS {
+    while step_idx < swap_steps {
         let step_next: u256 = *outputs.at(step_next_index);
         let step_limit_tick: u256 = *outputs.at(step_limit_index);
         let step_limit = if zero_for_one {
@@ -141,7 +143,7 @@ fn swap_private_with_verifier(
         step_idx += 1;
     }
     assert(limited_hit == is_limited, 'LIMIT_FLAG_MISMATCH');
-    let commitment_in_index: usize = 13 + (MAX_SWAP_STEPS * 6);
+    let commitment_in_index: usize = 13 + (swap_steps * 6);
     let token_id_index: usize = commitment_in_index + 1;
     let commitment_in: felt252 =
         (*outputs.at(commitment_in_index)).try_into().expect('COMMITMENT_IN_RANGE');
@@ -190,12 +192,12 @@ fn swap_private_with_verifier(
             'TICK_START_MISMATCH',
         );
     }
-    let step_fee_growth_0_start = 13 + (MAX_SWAP_STEPS * 4);
-    let step_fee_growth_1_start = step_fee_growth_0_start + MAX_SWAP_STEPS;
+    let step_fee_growth_0_start = 13 + (swap_steps * 4);
+    let step_fee_growth_1_start = step_fee_growth_0_start + swap_steps;
     let fee_growth_global_0_after: u256 =
-        *outputs.at(step_fee_growth_0_start + (MAX_SWAP_STEPS - 1));
+        *outputs.at(step_fee_growth_0_start + (swap_steps - 1));
     let fee_growth_global_1_after: u256 =
-        *outputs.at(step_fee_growth_1_start + (MAX_SWAP_STEPS - 1));
+        *outputs.at(step_fee_growth_1_start + (swap_steps - 1));
     assert(fee_growth_global_0_after >= fee_growth_global_0_before, 'FEE0_AFTER_LT');
     assert(fee_growth_global_1_after >= fee_growth_global_1_before, 'FEE1_AFTER_LT');
 
@@ -276,4 +278,17 @@ fn swap_private_with_verifier(
 fn assert_high_zero(input: u256) -> u256 {
     assert(input.high == 0, 'UNEXPECTED_U256_HIGH');
     input
+}
+
+fn swap_steps_from_verifier_calldata(calldata: Span<felt252>) -> usize {
+    assert(calldata.len() >= 3, 'SWAP_VARIANT_REQUIRED');
+    assert(*calldata.at(0) == SWAP_STEPS_PREFIX, 'SWAP_VARIANT_REQUIRED');
+    let swap_steps: usize = (*calldata.at(1)).try_into().expect('SWAP_STEPS_RANGE');
+    assert(
+        (swap_steps == 4) | (swap_steps == 8),
+        'SWAP_STEPS_UNSUPPORTED',
+    );
+    let zero_for_one = *calldata.at(2);
+    assert((zero_for_one == 0) | (zero_for_one == 1), 'SWAP_DIR_UNSUPPORTED');
+    swap_steps
 }

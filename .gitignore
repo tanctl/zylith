@@ -19,3 +19,33 @@ artifacts/
 /frontend/.env.local
 /frontend/.env.*.local
 /frontend/.next/
+
+# local toolchains, caches, and scratch dirs
+/.cargo_home/
+/.cargo_home_local/
+/.cargo_home_sandbox/
+/.rustup/
+/.tmp/
+/.vscode/
+
+# local circuit/prover build outputs
+/build_ofz/
+/build_ofz_noasm/
+/build_zfo/
+/build_zfo_4/
+/build_zfo_8/
+/circuits/.tmp/
+
+# local manual flow artifacts
+/rust/client/tmp_notes_manual/
+/rust/client/tmp_notes_manual2/
+
+# local env and ad-hoc outputs
+/frontend/.env
+/proof_calldata.txt
+/rust/client/proof_calldata.txt
+
+# local binaries/vendor clones/setup blobs
+/tools/
+/circom/
+/ptau/

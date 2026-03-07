@@ -3,36 +3,44 @@ use core::array::ArrayTrait;
 use core::traits::TryInto;
 use snforge_std::{start_cheat_caller_address, test_address};
 use starknet::ContractAddress;
-
+use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
 use zylith::core::PoolAdapter::{IPoolAdapterDispatcher, IPoolAdapterDispatcherTrait};
 use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
 use zylith::interfaces::IERC20::{IERC20Dispatcher, IERC20DispatcherTrait};
-use zylith::privacy::ShieldedNotes::ShieldedNotesExternalDispatcher;
-use zylith::privacy::ShieldedNotes::ShieldedNotesExternalDispatcherTrait;
-use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
-
-use crate::common::{
-    deploy_contract_at,
-    insertion_proof_for_empty_leaf,
-    insertion_proof_for_second_leaf,
-    merkle_proof_for_single_leaf,
-    merkle_proof_for_two_leaves,
-    merkle_root_for_single_leaf,
-    merkle_root_for_two_leaves,
-    u256_from_felt,
-    u256_from_u128,
+use zylith::privacy::ShieldedNotes::{
+    ShieldedNotesExternalDispatcher, ShieldedNotesExternalDispatcherTrait,
 };
 use crate::common::mock_proof_generator::{
-    build_liquidity_add_outputs_with_notes,
-    build_liquidity_remove_outputs,
+    build_liquidity_add_outputs_with_notes, build_liquidity_remove_outputs,
     build_swap_outputs_with_extras,
 };
-use crate::common::mocks::MockCore::MockCoreExternalDispatcher;
-use crate::common::mocks::MockCore::MockCoreExternalDispatcherTrait;
-use crate::common::mocks::MockGaragaVerifier::MockGaragaVerifierExternalDispatcher;
-use crate::common::mocks::MockGaragaVerifier::MockGaragaVerifierExternalDispatcherTrait;
-use crate::common::mocks::MockPoolAdapter::MockPoolAdapterExternalDispatcher;
-use crate::common::mocks::MockPoolAdapter::MockPoolAdapterExternalDispatcherTrait;
+use crate::common::mocks::MockCore::{MockCoreExternalDispatcher, MockCoreExternalDispatcherTrait};
+use crate::common::mocks::MockGaragaVerifier::{
+    MockGaragaVerifierExternalDispatcher, MockGaragaVerifierExternalDispatcherTrait,
+};
+use crate::common::mocks::MockPoolAdapter::{
+    MockPoolAdapterExternalDispatcher, MockPoolAdapterExternalDispatcherTrait,
+};
+use crate::common::{
+    deploy_contract_at, insertion_proof_for_empty_leaf, insertion_proof_for_second_leaf,
+    merkle_proof_for_single_leaf, merkle_proof_for_two_leaves, merkle_root_for_single_leaf,
+    merkle_root_for_two_leaves, u256_from_felt, u256_from_u128,
+};
+
+const SWAP_STEPS_PREFIX: felt252 = 'SWAP_STEPS';
+const MAX_SWAP_STEPS: felt252 = 8;
+
+fn swap_calldata(zero_for_one: bool) -> Array<felt252> {
+    let mut calldata = array![];
+    calldata.append(SWAP_STEPS_PREFIX);
+    calldata.append(MAX_SWAP_STEPS);
+    calldata.append(if zero_for_one {
+        1
+    } else {
+        0
+    });
+    calldata
+}
 
 fn build_deposit_outputs(commitment: felt252, amount: u128, token_id: felt252) -> Array<u256> {
     let mut outputs: Array<u256> = array![];
@@ -154,7 +162,7 @@ fn setup_pool_with_verifier() -> (
     )
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_deposit_with_verifier() {
     let (_, notes, garaga, token0, _, _, _, _, notes_address) = setup_pool_with_verifier();
@@ -167,7 +175,7 @@ fn test_deposit_with_verifier() {
     assert(out_commitment == commitment, 'commitment mismatch');
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_withdraw_with_verifier() {
     let (_, notes, garaga, token0, _, _, _, _, notes_address) = setup_pool_with_verifier();
@@ -187,7 +195,7 @@ fn test_withdraw_with_verifier() {
     assert(notes.is_nullifier_used(nullifier), 'nullifier not marked');
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_swap_multi_note_with_verifier() {
     let (pool, notes, garaga, token0, _, pool_address, adapter_address, _, notes_address) =
@@ -244,17 +252,28 @@ fn test_swap_multi_note_with_verifier() {
     );
     garaga.set_outputs(outputs.span());
     let output_proof = insertion_proof_for_empty_leaf();
-    pool.swap_private(array![].span(), array![proof0, proof1].span(), array![output_proof].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), array![proof0, proof1].span(), array![output_proof].span());
     assert(notes.is_nullifier_used(nullifier0), 'nullifier0 not used');
     assert(notes.is_nullifier_used(nullifier1), 'nullifier1 not used');
     let state = pool.get_pool_state();
     assert(state.sqrt_price == sqrt_end, 'price update');
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_liquidity_add_update_with_verifier() {
-    let (pool, notes, garaga, token0, token1, pool_address, adapter_address, core_address, notes_address) =
+    let (
+        pool,
+        notes,
+        garaga,
+        token0,
+        token1,
+        pool_address,
+        adapter_address,
+        core_address,
+        notes_address,
+    ) =
         setup_pool_with_verifier();
     let commitment0: felt252 = 3001;
     let commitment1: felt252 = 3002;
@@ -273,10 +292,8 @@ fn test_liquidity_add_update_with_verifier() {
 
     let prev_position_commitment: felt252 = 4001;
     start_cheat_caller_address(notes_address, pool_address);
-    let _ = notes.append_position_commitment(
-        prev_position_commitment,
-        insertion_proof_for_empty_leaf(),
-    );
+    let _ = notes
+        .append_position_commitment(prev_position_commitment, insertion_proof_for_empty_leaf());
     let root_position = merkle_root_for_single_leaf(prev_position_commitment);
 
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
@@ -340,25 +357,36 @@ fn test_liquidity_add_update_with_verifier() {
     let proof_position = merkle_proof_for_single_leaf(root_position, prev_position_commitment);
     let insert_proof_position = insertion_proof_for_second_leaf(prev_position_commitment);
 
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof0].span(),
-        array![proof1].span(),
-        array![proof_position].span(),
-        array![insert_proof_position].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof0].span(),
+            array![proof1].span(),
+            array![proof_position].span(),
+            array![insert_proof_position].span(),
+            array![].span(),
+            array![].span(),
+        );
     assert(notes.is_nullifier_used(nullifier_position), 'position nullifier');
     assert(notes.is_nullifier_used(nullifier_token0), 'token0 nullifier');
     assert(notes.is_nullifier_used(nullifier_token1), 'token1 nullifier');
     assert(pool.get_liquidity() == 110, 'liquidity updated');
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_liquidity_remove_with_verifier() {
-    let (pool, notes, garaga, token0, token1, pool_address, adapter_address, core_address, notes_address) =
+    let (
+        pool,
+        notes,
+        garaga,
+        token0,
+        token1,
+        pool_address,
+        adapter_address,
+        core_address,
+        notes_address,
+    ) =
         setup_pool_with_verifier();
     let commitment0: felt252 = 6001;
     let commitment1: felt252 = 6002;
@@ -377,10 +405,8 @@ fn test_liquidity_remove_with_verifier() {
 
     let prev_position_commitment: felt252 = 7001;
     start_cheat_caller_address(notes_address, pool_address);
-    let _ = notes.append_position_commitment(
-        prev_position_commitment,
-        insertion_proof_for_empty_leaf(),
-    );
+    let _ = notes
+        .append_position_commitment(prev_position_commitment, insertion_proof_for_empty_leaf());
     let root_position = merkle_root_for_single_leaf(prev_position_commitment);
 
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
@@ -430,13 +456,14 @@ fn test_liquidity_remove_with_verifier() {
     let proof_position = merkle_proof_for_single_leaf(root_position, prev_position_commitment);
     let output_proof_token0 = insertion_proof_for_second_leaf(commitment0);
     let output_proof_token1 = insertion_proof_for_second_leaf(commitment1);
-    pool.remove_liquidity_private(
-        array![].span(),
-        proof_position,
-        array![].span(),
-        array![output_proof_token0].span(),
-        array![output_proof_token1].span(),
-    );
+    pool
+        .remove_liquidity_private(
+            array![].span(),
+            proof_position,
+            array![].span(),
+            array![output_proof_token0].span(),
+            array![output_proof_token1].span(),
+        );
     assert(notes.is_nullifier_used(nullifier_position), 'position nullifier');
     assert(pool.get_liquidity() == 15, 'liquidity reduced');
 }

@@ -13,7 +13,8 @@ const BN254_MODULUS_DEC: &str =
     "21888242871839275222246405745257275088548364400416034343698204186575808495617";
 const STARK_FIELD_MODULUS_HEX: &str =
     "800000000000011000000000000000000000000000000000000000000000001";
-const POSEIDON_CONSTANTS: &str = include_str!("../../../circuits/constants/poseidon_constants.circom");
+const POSEIDON_CONSTANTS: &str =
+    include_str!("../../../circuits/constants/poseidon_constants.circom");
 
 const N_ROUNDS_P: [usize; 16] = [
     56, 57, 56, 60, 60, 63, 64, 63, 60, 66, 60, 65, 70, 60, 64, 68,
@@ -76,7 +77,9 @@ pub fn felt_to_i32(value: &Felt) -> Result<i32, ClientError> {
     let min_abs = BigUint::from(1u32) << 31;
     let lower_bound = &modulus - &min_abs;
     if as_big < lower_bound {
-        return Err(ClientError::InvalidInput("felt out of i32 range".to_string()));
+        return Err(ClientError::InvalidInput(
+            "felt out of i32 range".to_string(),
+        ));
     }
 
     let mag = &modulus - &as_big;
@@ -84,7 +87,9 @@ pub fn felt_to_i32(value: &Felt) -> Result<i32, ClientError> {
         .to_u32()
         .ok_or_else(|| ClientError::InvalidInput("felt out of i32 range".to_string()))?;
     if mag_u32 == 0 || mag_u32 > (1u32 << 31) {
-        return Err(ClientError::InvalidInput("felt out of i32 range".to_string()));
+        return Err(ClientError::InvalidInput(
+            "felt out of i32 range".to_string(),
+        ));
     }
     if mag_u32 == (1u32 << 31) {
         return Ok(i32::MIN);
@@ -157,8 +162,8 @@ pub(crate) fn poseidon_hash_bn254(inputs: &[BigUint]) -> Result<BigUint, ClientE
         let s_offset = (t * 2 - 1) * round;
         let mut next_state = vec![BigUint::zero(); t];
         let mut lc = BigUint::zero();
-        for i in 0..t {
-            let term = mod_mul(&params.s[s_offset + i], &in_state[i], &modulus);
+        for (i, value) in in_state.iter().enumerate().take(t) {
+            let term = mod_mul(&params.s[s_offset + i], value, &modulus);
             lc = mod_add(&lc, &term, &modulus);
         }
         next_state[0] = lc;
@@ -178,8 +183,8 @@ pub(crate) fn poseidon_hash_bn254(inputs: &[BigUint]) -> Result<BigUint, ClientE
 
     apply_sigma(&mut state, &modulus);
     let mut output = BigUint::zero();
-    for j in 0..t {
-        let term = mod_mul(&params.m[j][0], &state[j], &modulus);
+    for (j, value) in state.iter().enumerate().take(t) {
+        let term = mod_mul(&params.m[j][0], value, &modulus);
         output = mod_add(&output, &term, &modulus);
     }
 
@@ -209,8 +214,10 @@ fn poseidon_params(t: usize) -> Result<PoseidonParams, ClientError> {
 }
 
 fn parse_poseidon_params(t: usize) -> Result<PoseidonParams, ClientError> {
-    if t < 2 || t > 17 {
-        return Err(ClientError::InvalidInput("unsupported poseidon width".to_string()));
+    if !(2..=17).contains(&t) {
+        return Err(ClientError::InvalidInput(
+            "unsupported poseidon width".to_string(),
+        ));
     }
     let n_rounds_f = 8;
     let n_rounds_p = N_ROUNDS_P[t - 2];
@@ -243,7 +250,9 @@ fn parse_poseidon_params(t: usize) -> Result<PoseidonParams, ClientError> {
 
     let expected_matrix = t * t;
     if m_vals.len() != expected_matrix || p_vals.len() != expected_matrix {
-        return Err(ClientError::Crypto("poseidon matrix length mismatch".to_string()));
+        return Err(ClientError::Crypto(
+            "poseidon matrix length mismatch".to_string(),
+        ));
     }
 
     let m = reshape_matrix(m_vals, t)?;
@@ -290,7 +299,9 @@ fn extract_constants_block(func: &str, t: usize) -> Result<String, ClientError> 
             }
         }
     }
-    Err(ClientError::Crypto("poseidon constants malformed".to_string()))
+    Err(ClientError::Crypto(
+        "poseidon constants malformed".to_string(),
+    ))
 }
 
 fn parse_hex_numbers(block: &str) -> Result<Vec<BigUint>, ClientError> {
@@ -332,7 +343,7 @@ fn reshape_matrix(values: Vec<BigUint>, t: usize) -> Result<Vec<Vec<BigUint>>, C
 }
 
 fn is_hex(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+    byte.is_ascii_hexdigit()
 }
 
 fn add_round_constants(state: &mut [BigUint], c: &[BigUint], offset: usize, modulus: &BigUint) {

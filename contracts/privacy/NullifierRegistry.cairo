@@ -1,11 +1,11 @@
 // nullifier registry component to prevent double spends
 #[starknet::component]
 pub mod NullifierRegistry {
+    use starknet::get_block_timestamp;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
-    use starknet::get_block_timestamp;
 
     #[storage]
     pub struct Storage {

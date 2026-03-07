@@ -12,12 +12,8 @@ fn test_constructor() {
     let mut spy = spy_events();
 
     let owner: ContractAddress = 1234.try_into().unwrap();
-    let erc20 = d
-        .deploy_mock_token_with_balance(owner, 0xffffffffffffffffffffffffffffffff);
-    assert(
-        erc20.balanceOf(owner) == 0xffffffffffffffffffffffffffffffff,
-        'balance of this',
-    );
+    let erc20 = d.deploy_mock_token_with_balance(owner, 0xffffffffffffffffffffffffffffffff);
+    assert(erc20.balanceOf(owner) == 0xffffffffffffffffffffffffffffffff, 'balance of this');
     let events = spy.get_events().emitted_by(erc20.contract_address);
     let zero_addr: ContractAddress = 0.try_into().unwrap();
     let mut found = false;
@@ -28,8 +24,7 @@ fn test_constructor() {
             if *event.data.at(0) == zero_addr.into()
                 && *event.data.at(1) == owner.into()
                 && *event.data.at(2) == 0xffffffffffffffffffffffffffffffff_u128.into()
-                && *event.data.at(3) == 0_u128.into()
-            {
+                && *event.data.at(3) == 0_u128.into() {
                 found = true;
             }
         }
@@ -66,15 +61,13 @@ fn test_transfer() {
             if *event.data.at(0) == zero_addr.into()
                 && *event.data.at(1) == get_contract_address().into()
                 && *event.data.at(2) == 0xffffffffffffffffffffffffffffffff_u128.into()
-                && *event.data.at(3) == 0_u128.into()
-            {
+                && *event.data.at(3) == 0_u128.into() {
                 found_mint = true;
             }
             if *event.data.at(0) == get_contract_address().into()
                 && *event.data.at(1) == recipient.into()
                 && *event.data.at(2) == amount.low.into()
-                && *event.data.at(3) == amount.high.into()
-            {
+                && *event.data.at(3) == amount.high.into() {
                 found_transfer = true;
             }
         }

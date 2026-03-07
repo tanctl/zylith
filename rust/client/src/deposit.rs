@@ -42,15 +42,25 @@ impl<A: ConnectedAccount + Sync> DepositClient<A> {
         }
     }
 
-    pub async fn deposit_token0(&self, request: DepositRequest) -> Result<DepositResult, ClientError> {
+    pub async fn deposit_token0(
+        &self,
+        request: DepositRequest,
+    ) -> Result<DepositResult, ClientError> {
         self.deposit("deposit_token0", request).await
     }
 
-    pub async fn deposit_token1(&self, request: DepositRequest) -> Result<DepositResult, ClientError> {
+    pub async fn deposit_token1(
+        &self,
+        request: DepositRequest,
+    ) -> Result<DepositResult, ClientError> {
         self.deposit("deposit_token1", request).await
     }
 
-    async fn deposit(&self, entrypoint: &str, request: DepositRequest) -> Result<DepositResult, ClientError> {
+    async fn deposit(
+        &self,
+        entrypoint: &str,
+        request: DepositRequest,
+    ) -> Result<DepositResult, ClientError> {
         if request.note.amount == 0 {
             return Err(ClientError::InvalidInput("amount is zero".to_string()));
         }
@@ -61,13 +71,19 @@ impl<A: ConnectedAccount + Sync> DepositClient<A> {
             return Err(ClientError::InvalidInput("token id mismatch".to_string()));
         }
         if request.token_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("token address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "token address is zero".to_string(),
+            ));
         }
         if self.shielded_notes_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("shielded notes address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "shielded notes address is zero".to_string(),
+            ));
         }
         if request.insertion_proof.token != request.token_address {
-            return Err(ClientError::InvalidInput("insertion proof token mismatch".to_string()));
+            return Err(ClientError::InvalidInput(
+                "insertion proof token mismatch".to_string(),
+            ));
         }
         let commitment = compute_commitment(&request.note, request.token_id)?;
         approve_erc20(
@@ -114,10 +130,7 @@ async fn approve_erc20<A: ConnectedAccount + Sync>(
 ) -> Result<TxHash, ClientError> {
     let selector = get_selector_from_name("approve")
         .map_err(|err| ClientError::InvalidInput(err.to_string()))?;
-    let mut calldata = Vec::new();
-    calldata.push(spender);
-    calldata.push(Felt::from(amount));
-    calldata.push(Felt::ZERO);
+    let calldata = vec![spender, Felt::from(amount), Felt::ZERO];
     let call = Call {
         to: token,
         selector,

@@ -1,9 +1,9 @@
-use std::sync::OnceLock;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use rand::rngs::OsRng;
+use rand::RngCore;
 use starknet::core::types::{Felt, U256};
+use std::sync::OnceLock;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::ClientError;
@@ -91,7 +91,9 @@ pub fn generate_note_with_token_id(
     token_id: u8,
 ) -> Result<Note, ClientError> {
     if token_id > 1 {
-        return Err(ClientError::InvalidInput("token id must be 0 or 1".to_string()));
+        return Err(ClientError::InvalidInput(
+            "token id must be 0 or 1".to_string(),
+        ));
     }
     for _ in 0..MAX_NOTE_GEN_ATTEMPTS {
         let note = random_note(amount, token);
@@ -141,7 +143,9 @@ fn random_position_note(
 
 pub fn compute_commitment(note: &Note, token_id: u8) -> Result<Felt, ClientError> {
     if token_id > 1 {
-        return Err(ClientError::InvalidInput("token id must be 0 or 1".to_string()));
+        return Err(ClientError::InvalidInput(
+            "token id must be 0 or 1".to_string(),
+        ));
     }
     let nullifier = generate_nullifier_hash(note, token_id)?;
     if nullifier == Felt::ZERO {
@@ -162,7 +166,9 @@ pub fn compute_commitment(note: &Note, token_id: u8) -> Result<Felt, ClientError
     }
     let zero_hash = zero_leaf_hash()?;
     if commitment_felt == zero_hash {
-        return Err(ClientError::Crypto("commitment equals zero leaf hash".to_string()));
+        return Err(ClientError::Crypto(
+            "commitment equals zero leaf hash".to_string(),
+        ));
     }
     Ok(commitment_felt)
 }
@@ -199,14 +205,18 @@ pub fn compute_position_commitment(note: &PositionNote) -> Result<Felt, ClientEr
     }
     let zero_hash = zero_leaf_hash()?;
     if commitment_felt == zero_hash {
-        return Err(ClientError::Crypto("commitment equals zero leaf hash".to_string()));
+        return Err(ClientError::Crypto(
+            "commitment equals zero leaf hash".to_string(),
+        ));
     }
     Ok(commitment_felt)
 }
 
 pub fn generate_nullifier_hash(note: &Note, token_id: u8) -> Result<Felt, ClientError> {
     if token_id > 1 {
-        return Err(ClientError::InvalidInput("token id must be 0 or 1".to_string()));
+        return Err(ClientError::InvalidInput(
+            "token id must be 0 or 1".to_string(),
+        ));
     }
     let inputs = vec![
         biguint_from_u64(DOMAIN_TAG),
@@ -298,9 +308,11 @@ fn deserialize_note(bytes: &[u8]) -> Result<Note, ClientError> {
     let mut token_bytes = [0u8; 32];
     secret.copy_from_slice(&bytes[0..32]);
     nullifier.copy_from_slice(&bytes[32..64]);
-    let amount = u128::from_be_bytes(bytes[64..80].try_into().map_err(|_| {
-        ClientError::InvalidInput("invalid amount bytes".to_string())
-    })?);
+    let amount = u128::from_be_bytes(
+        bytes[64..80]
+            .try_into()
+            .map_err(|_| ClientError::InvalidInput("invalid amount bytes".to_string()))?,
+    );
     token_bytes.copy_from_slice(&bytes[80..112]);
     let token = Felt::from_bytes_be(&token_bytes);
     Ok(Note {
@@ -321,6 +333,7 @@ fn encode_i32_twos_complement(value: i32) -> u128 {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{compute_position_commitment, generate_position_nullifier_hash, PositionNote};
     use starknet::core::types::{Felt, U256};
@@ -329,12 +342,12 @@ mod tests {
     fn position_commitment_is_nonzero() {
         let note = PositionNote {
             secret: [
-                211, 15, 22, 72, 163, 53, 19, 66, 226, 161, 218, 116, 203, 148, 103, 66, 114,
-                160, 233, 13, 172, 24, 153, 56, 161, 32, 120, 100, 195, 50, 111, 117,
+                211, 15, 22, 72, 163, 53, 19, 66, 226, 161, 218, 116, 203, 148, 103, 66, 114, 160,
+                233, 13, 172, 24, 153, 56, 161, 32, 120, 100, 195, 50, 111, 117,
             ],
             nullifier: [
-                182, 162, 203, 162, 95, 64, 226, 9, 170, 27, 196, 217, 168, 30, 179, 104, 108,
-                174, 175, 64, 113, 33, 30, 118, 225, 154, 65, 28, 130, 167, 74, 83,
+                182, 162, 203, 162, 95, 64, 226, 9, 170, 27, 196, 217, 168, 30, 179, 104, 108, 174,
+                175, 64, 113, 33, 30, 118, 225, 154, 65, 28, 130, 167, 74, 83,
             ],
             tick_lower: 1,
             tick_upper: 2,
@@ -371,8 +384,7 @@ fn biguint_from_felt(value: &Felt) -> num_bigint::BigUint {
 
 fn zero_leaf_hash() -> Result<Felt, ClientError> {
     let value = ZERO_LEAF_HASH.get_or_init(|| {
-        Felt::from_hex(generated_constants::ZERO_LEAF_HASH_HEX)
-            .expect("ZERO_LEAF_HASH invalid")
+        Felt::from_hex(generated_constants::ZERO_LEAF_HASH_HEX).expect("ZERO_LEAF_HASH invalid")
     });
     Ok(*value)
 }

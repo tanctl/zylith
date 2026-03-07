@@ -4,7 +4,7 @@ use std::fmt;
 pub enum ProverError {
     Io(String),
     Json(String),
-    Snarkjs(String),
+    Rapidsnark(String),
     Garaga(String),
     Conversion(String),
     InvalidInput(String),
@@ -15,7 +15,7 @@ impl fmt::Display for ProverError {
         match self {
             ProverError::Io(msg) => write!(f, "io error: {msg}"),
             ProverError::Json(msg) => write!(f, "json error: {msg}"),
-            ProverError::Snarkjs(msg) => write!(f, "snarkjs error: {msg}"),
+            ProverError::Rapidsnark(msg) => write!(f, "rapidsnark error: {msg}"),
             ProverError::Garaga(msg) => write!(f, "garaga error: {msg}"),
             ProverError::Conversion(msg) => write!(f, "conversion error: {msg}"),
             ProverError::InvalidInput(msg) => write!(f, "invalid input: {msg}"),

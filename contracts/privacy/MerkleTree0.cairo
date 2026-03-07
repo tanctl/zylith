@@ -3,12 +3,12 @@
 // zero value: poseidon_hash(0, 0), higher level zeros are poseidon_hash(z_i, z_i)
 #[starknet::component]
 pub mod MerkleTree0 {
+    use core::array::SpanTrait;
+    use core::poseidon::hades_permutation;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
-    use core::poseidon::hades_permutation;
-    use core::array::SpanTrait;
     use crate::constants::generated as generated_constants;
 
     const HEIGHT: u8 = generated_constants::TREE_HEIGHT;
@@ -59,7 +59,11 @@ pub mod MerkleTree0 {
                 }
 
                 let is_right = (index % 2) == 1;
-                let sibling_index = if is_right { index - 1 } else { index + 1 };
+                let sibling_index = if is_right {
+                    index - 1
+                } else {
+                    index + 1
+                };
                 let sibling = {
                     if self.levels_present.read((level, sibling_index)) {
                         self.levels.read((level, sibling_index))
@@ -77,7 +81,7 @@ pub mod MerkleTree0 {
                 hash_ = poseidon_hash_pair(left, right);
                 index /= 2;
                 level = level + 1;
-            };
+            }
 
             self.root.write(hash_);
             self.next_leaf_index.write(leaf_index + 1);
@@ -125,12 +129,14 @@ pub mod MerkleTree0 {
                 hash_ = poseidon_hash_pair(left, right);
                 index /= 2;
                 level = level + 1;
-            };
+            }
 
             hash_
         }
 
-        fn hash_pair(self: @ComponentState<TContractState>, left: felt252, right: felt252) -> felt252 {
+        fn hash_pair(
+            self: @ComponentState<TContractState>, left: felt252, right: felt252,
+        ) -> felt252 {
             poseidon_hash_pair(left, right)
         }
     }

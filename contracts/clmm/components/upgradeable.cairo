@@ -9,9 +9,8 @@ pub mod Upgradeable {
     use core::array::SpanTrait;
     use core::num::traits::Zero;
     use core::result::ResultTrait;
-    use starknet::ClassHash;
-    use starknet::get_block_timestamp;
     use starknet::syscalls::{library_call_syscall, replace_class_syscall};
+    use starknet::{ClassHash, get_block_timestamp};
     use crate::components::owned::Ownable;
     use crate::interfaces::upgradeable::IUpgradeable;
     use super::IHasInterface;
@@ -70,7 +69,12 @@ pub mod Upgradeable {
                     assert(scheduled_at >= now, 'TIME_OVERFLOW');
                     self.pending_class_hash.write(class_hash);
                     self.pending_ready_at.write(scheduled_at);
-                    self.emit(ClassHashScheduled { new_class_hash: class_hash, ready_at: scheduled_at });
+                    self
+                        .emit(
+                            ClassHashScheduled {
+                                new_class_hash: class_hash, ready_at: scheduled_at,
+                            },
+                        );
                     return ();
                 }
             }

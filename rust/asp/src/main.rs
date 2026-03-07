@@ -27,7 +27,9 @@ use starknet::providers::jsonrpc::{HttpTransport, JsonRpcClient};
 use starknet::providers::Provider;
 use url::Url;
 
-use crate::events::{IndexerCommand, IndexerService, RateLimiter, RootCacheEntry, ROOT_CACHE_LIMIT};
+use crate::events::{
+    IndexerCommand, IndexerService, RateLimiter, RootCacheEntry, ROOT_CACHE_LIMIT,
+};
 use crate::merkle::MerkleTree;
 use crate::storage::Storage;
 
@@ -147,14 +149,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     let storage = Arc::new(Storage::new(&config.postgres_url).await?);
     let tree_height = MerkleTree::default_height();
-    let trees = Arc::new(RwLock::new(
-        storage.load_trees(tree_height).await?,
-    ));
+    let trees = Arc::new(RwLock::new(storage.load_trees(tree_height).await?));
 
-    let recent_roots = storage
-        .load_recent_roots(ROOT_CACHE_LIMIT)
-        .await
-        ?;
+    let recent_roots = storage.load_recent_roots(ROOT_CACHE_LIMIT).await?;
     let mut roots_cache: HashMap<String, VecDeque<RootCacheEntry>> = HashMap::new();
     for (token, entries) in recent_roots {
         let mut deque = VecDeque::new();
@@ -223,7 +220,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .route("/path", post(get_path))
         .route("/insert_path", post(get_insert_path))
         .route("/commitment/:hash", get(get_commitment))
-        .route("/commitment_by_index/:token/:index", get(get_commitment_by_index))
+        .route(
+            "/commitment_by_index/:token/:index",
+            get(get_commitment_by_index),
+        )
         .route("/sync", get(trigger_sync))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, rate_limit));
@@ -232,8 +232,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("[asp] listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -286,7 +289,7 @@ async fn get_root_at(
     Query(query): Query<RootQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<RootAtResponse>, StatusCode> {
-    let token = query.token.ok_or(StatusCode::BAD_REQUEST)?;
+    let token = normalize_token_key(&query.token.ok_or(StatusCode::BAD_REQUEST)?)?;
     let max_block = finality_block(&state).await?;
     let (root_hash, root_leaf_count) = if state.finality_depth == 0 {
         let root = state
@@ -319,8 +322,8 @@ async fn get_root_at(
             max_block,
             state.finality_depth != 0,
         )
-            .await?
-            .ok_or(StatusCode::NOT_FOUND)?
+        .await?
+        .ok_or(StatusCode::NOT_FOUND)?
     } else {
         root_leaf_count
     };
@@ -336,7 +339,7 @@ async fn get_root_latest(
     Query(query): Query<RootQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<RootAtResponse>, StatusCode> {
-    let token = query.token.ok_or(StatusCode::BAD_REQUEST)?;
+    let token = normalize_token_key(&query.token.ok_or(StatusCode::BAD_REQUEST)?)?;
     let trees = state.trees.read().await;
     let tree = trees.get(&token).ok_or(StatusCode::NOT_FOUND)?;
     let tree_snapshot = tree.clone();
@@ -529,8 +532,9 @@ async fn get_insert_path(
     State(state): State<AppState>,
     Json(payload): Json<InsertPathRequest>,
 ) -> Result<Json<InsertPathResponse>, StatusCode> {
+    let token = normalize_token_key(&payload.token)?;
     let trees = state.trees.read().await;
-    let tree = trees.get(&payload.token).ok_or(StatusCode::NOT_FOUND)?;
+    let tree = trees.get(&token).ok_or(StatusCode::NOT_FOUND)?;
     let leaf_count = tree.next_index();
     let root_hash = felt_to_hex(&tree.root());
     let (leaf_index, path, indices) = tree
@@ -538,7 +542,7 @@ async fn get_insert_path(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let path_hex = path.into_iter().map(|felt| felt_to_hex(&felt)).collect();
     Ok(Json(InsertPathResponse {
-        token: payload.token,
+        token,
         root: root_hash,
         commitment: felt_to_hex(&merkle::zero_leaf_hash()),
         leaf_index,
@@ -634,6 +638,7 @@ async fn get_commitment_by_index(
     Path((token, index)): Path<(String, u64)>,
     State(state): State<AppState>,
 ) -> Result<Json<CommitmentIndexResponse>, StatusCode> {
+    let token = normalize_token_key(&token)?;
     let max_block = finality_block(&state).await?;
     let found = state
         .storage
@@ -649,6 +654,14 @@ async fn get_commitment_by_index(
         leaf_index: index,
         commitment: found.0,
     }))
+}
+
+fn normalize_token_key(token: &str) -> Result<String, StatusCode> {
+    let token = token.trim();
+    if token == "position" {
+        return Ok("position".to_string());
+    }
+    Ok(felt_to_hex(&parse_felt(token)?))
 }
 
 async fn trigger_sync(
@@ -694,8 +707,7 @@ async fn finality_block(state: &AppState) -> Result<u64, StatusCode> {
 }
 
 fn load_config(path: &PathBuf) -> Result<Config, String> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|err| format!("read config: {err}"))?;
+    let contents = std::fs::read_to_string(path).map_err(|err| format!("read config: {err}"))?;
     let mut map: HashMap<String, String> = HashMap::new();
     for raw_line in contents.lines() {
         let line = strip_comments(raw_line).trim().to_string();
@@ -719,17 +731,14 @@ fn load_config(path: &PathBuf) -> Result<Config, String> {
     let postgres_url = get_required(&map, "postgres_url")?;
     let server_port = parse_u16(&get_required(&map, "server_port")?, "server_port")?;
     let finality_depth = parse_u64(&get_required(&map, "finality_depth")?, "finality_depth")?;
-    let sync_token = map
-        .get("sync_token")
-        .cloned()
-        .and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
+    let sync_token = map.get("sync_token").cloned().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     if sync_token.is_none() && !is_dev_mode() {
         return Err("sync_token must be set unless ENV=dev or ENV=test".to_string());
     }
@@ -812,7 +821,7 @@ fn parse_u16(value: &str, key: &str) -> Result<u16, String> {
 }
 
 fn to_io_error(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, message.into())
+    std::io::Error::other(message.into())
 }
 
 async fn fetch_token_address(
@@ -831,7 +840,7 @@ async fn fetch_token_address(
         .await
         .map_err(|err| format!("call {entrypoint}: {err}"))?;
     result
-        .get(0)
+        .first()
         .copied()
         .ok_or_else(|| format!("call {entrypoint}: empty response"))
 }
@@ -907,6 +916,7 @@ mod tests {
             resync_tx,
             rate_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),
             finality_depth: 0,
+            sync_token: None,
         };
 
         let Json(root_response) = get_root_latest(

@@ -99,9 +99,11 @@ impl Storage {
         for stmt in statements {
             sqlx::query(stmt).execute(&self.pool).await?;
         }
-        sqlx::query("ALTER TABLE roots ADD COLUMN IF NOT EXISTS leaf_count BIGINT NOT NULL DEFAULT 0")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "ALTER TABLE roots ADD COLUMN IF NOT EXISTS leaf_count BIGINT NOT NULL DEFAULT 0",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -185,13 +187,11 @@ impl Storage {
         root_hash: &str,
         leaf_count: u64,
     ) -> Result<(), StorageError> {
-        let rows = sqlx::query(
-            "SELECT leaf_count FROM roots WHERE token = $1 AND root_hash = $2",
-        )
-        .bind(token)
-        .bind(root_hash)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT leaf_count FROM roots WHERE token = $1 AND root_hash = $2")
+            .bind(token)
+            .bind(root_hash)
+            .fetch_all(&self.pool)
+            .await?;
         if rows.is_empty() {
             return Ok(());
         }
@@ -216,7 +216,11 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn insert_nullifier(&self, nullifier: &str, block_number: u64) -> Result<(), StorageError> {
+    pub async fn insert_nullifier(
+        &self,
+        nullifier: &str,
+        block_number: u64,
+    ) -> Result<(), StorageError> {
         sqlx::query(
             "INSERT INTO nullifiers (nullifier_hash, used_at_block) \
              VALUES ($1, $2) \
@@ -305,11 +309,7 @@ impl Storage {
             let root_hash: String = row.try_get("root_hash")?;
             let leaf_count: i64 = row.try_get("leaf_count")?;
             let block_number: i64 = row.try_get("block_number")?;
-            return Ok(Some((
-                root_hash,
-                leaf_count as u64,
-                block_number as u64,
-            )));
+            return Ok(Some((root_hash, leaf_count as u64, block_number as u64)));
         }
         Ok(None)
     }
@@ -375,11 +375,7 @@ impl Storage {
             let root_index: i64 = row.try_get("root_index")?;
             let root_hash: String = row.try_get("root_hash")?;
             let leaf_count: i64 = row.try_get("leaf_count")?;
-            return Ok(Some((
-                root_index as u64,
-                root_hash,
-                leaf_count as u64,
-            )));
+            return Ok(Some((root_index as u64, root_hash, leaf_count as u64)));
         }
         Ok(None)
     }
@@ -413,10 +409,7 @@ impl Storage {
         Ok(None)
     }
 
-    pub async fn get_latest_leaf_count(
-        &self,
-        token: &str,
-    ) -> Result<Option<u64>, StorageError> {
+    pub async fn get_latest_leaf_count(&self, token: &str) -> Result<Option<u64>, StorageError> {
         let row = sqlx::query(
             "SELECT leaf_count FROM roots WHERE token = $1 ORDER BY root_index DESC LIMIT 1",
         )
@@ -471,8 +464,7 @@ impl Storage {
                 .or_insert_with(|| MerkleTree::new(height));
             let leaf = Felt::from_hex_be(&commitment)
                 .map_err(|e| StorageError::Invariant(e.to_string()))?;
-            tree
-                .insert_at(leaf_index as u64, leaf)
+            tree.insert_at(leaf_index as u64, leaf)
                 .map_err(|err| match err {
                     MerkleError::IndexGap { expected, got } => StorageError::Invariant(format!(
                         "merkle index gap for {} expected {} got {}",

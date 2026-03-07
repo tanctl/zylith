@@ -22,32 +22,20 @@ pub fn liquidity_delta_to_amount_delta(
     if (sqrt_ratio <= sqrt_ratio_lower) {
         return Delta {
             amount0: i129 {
-                mag: amount0_delta(
-                    sqrt_ratio_lower, sqrt_ratio_upper, mag, round_up,
-                ),
-                sign,
+                mag: amount0_delta(sqrt_ratio_lower, sqrt_ratio_upper, mag, round_up), sign,
             },
             amount1: Zero::zero(),
         };
     } else if (sqrt_ratio < sqrt_ratio_upper) {
         return Delta {
-            amount0: i129 {
-                mag: amount0_delta(sqrt_ratio, sqrt_ratio_upper, mag, round_up),
-                sign,
-            },
-            amount1: i129 {
-                mag: amount1_delta(sqrt_ratio_lower, sqrt_ratio, mag, round_up),
-                sign,
-            },
+            amount0: i129 { mag: amount0_delta(sqrt_ratio, sqrt_ratio_upper, mag, round_up), sign },
+            amount1: i129 { mag: amount1_delta(sqrt_ratio_lower, sqrt_ratio, mag, round_up), sign },
         };
     } else {
         return Delta {
             amount0: Zero::zero(),
             amount1: i129 {
-                mag: amount1_delta(
-                    sqrt_ratio_lower, sqrt_ratio_upper, mag, round_up,
-                ),
-                sign,
+                mag: amount1_delta(sqrt_ratio_lower, sqrt_ratio_upper, mag, round_up), sign,
             },
         };
     }

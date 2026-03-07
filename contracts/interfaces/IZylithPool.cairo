@@ -1,7 +1,7 @@
 // Main Zylith pool interface matching core entrypoints
 use starknet::ContractAddress;
-use crate::core::ZylithPool::{PoolConfig, PoolState, SwapQuote, SwapStepsQuote};
 use crate::clmm::interfaces::core::SwapParameters;
+use crate::core::ZylithPool::{PoolConfig, PoolState, SwapQuote, SwapStepsQuote};
 use crate::privacy::ShieldedNotes::MerkleProof;
 
 #[starknet::interface]
@@ -61,12 +61,11 @@ pub trait IZylithPool<TContractState> {
     fn get_liquidity(self: @TContractState) -> u128;
     fn get_fee_growth_global(self: @TContractState) -> (u256, u256);
     fn get_sqrt_ratio_at_tick(self: @TContractState, tick: i32) -> u256;
-    fn get_fee_growth_inside(self: @TContractState, tick_lower: i32, tick_upper: i32) -> (u256, u256);
+    fn get_fee_growth_inside(
+        self: @TContractState, tick_lower: i32, tick_upper: i32,
+    ) -> (u256, u256);
     fn withdraw_protocol_fees(
-        ref self: TContractState,
-        token: ContractAddress,
-        recipient: ContractAddress,
-        amount: u128,
+        ref self: TContractState, token: ContractAddress, recipient: ContractAddress, amount: u128,
     );
     fn get_protocol_fee_totals(self: @TContractState) -> (u128, u128);
 }

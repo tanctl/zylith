@@ -14,6 +14,16 @@ impl ProofCalldata {
         &self.full_proof
     }
 
+    pub fn prepend_tokens(&mut self, tokens: &[String]) {
+        if tokens.is_empty() {
+            return;
+        }
+        let mut prefixed = Vec::with_capacity(self.full_proof.len() + tokens.len());
+        prefixed.extend(tokens.iter().cloned());
+        prefixed.append(&mut self.full_proof);
+        self.full_proof = prefixed;
+    }
+
     pub fn to_calldata(&self) -> Vec<String> {
         if let Some(len) = parse_len_token(self.full_proof.first()) {
             if len == self.full_proof.len().saturating_sub(1) {

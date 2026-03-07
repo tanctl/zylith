@@ -44,6 +44,7 @@ pub struct IndexerService {
 }
 
 impl IndexerService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: JsonRpcClient<HttpTransport>,
         storage: Arc<Storage>,
@@ -120,9 +121,11 @@ impl IndexerService {
     async fn sync_once(&self) -> Result<(), StorageError> {
         let last_block = self.storage.get_last_block().await?;
         let finality_depth = self.finality_depth;
-        let latest = self.provider.block_number().await.map_err(|err| {
-            StorageError::Db(format!("starknet block_number error: {err}"))
-        })?;
+        let latest = self
+            .provider
+            .block_number()
+            .await
+            .map_err(|err| StorageError::Db(format!("starknet block_number error: {err}")))?;
         let safe_latest = latest.saturating_sub(finality_depth);
         if let Some(block) = last_block {
             if block > safe_latest {
@@ -150,7 +153,10 @@ impl IndexerService {
             for (token, entries) in recent_roots {
                 let mut deque = VecDeque::new();
                 for (_root_index, root_hash, _block_number, leaf_count) in entries {
-                    deque.push_back(RootCacheEntry { root_hash, leaf_count });
+                    deque.push_back(RootCacheEntry {
+                        root_hash,
+                        leaf_count,
+                    });
                 }
                 roots_cache.insert(token, deque);
             }
@@ -206,13 +212,17 @@ impl IndexerService {
         if key == deposit_key {
             self.handle_deposit(&emitted.data, block_number).await?;
         } else if key == root_key {
-            self.handle_root_updated(&emitted.data, block_number).await?;
+            self.handle_root_updated(&emitted.data, block_number)
+                .await?;
         } else if key == position_commitment_key {
-            self.handle_position_commitment(&emitted.data, block_number).await?;
+            self.handle_position_commitment(&emitted.data, block_number)
+                .await?;
         } else if key == position_root_key {
-            self.handle_position_root_updated(&emitted.data, block_number).await?;
+            self.handle_position_root_updated(&emitted.data, block_number)
+                .await?;
         } else if key == nullifier_key || key == nullifier_marked_key {
-            self.handle_nullifier_used(&emitted.data, block_number).await?;
+            self.handle_nullifier_used(&emitted.data, block_number)
+                .await?;
         }
         Ok(())
     }
@@ -297,7 +307,11 @@ impl IndexerService {
         Ok(())
     }
 
-    async fn handle_root_updated(&self, data: &[Felt], block_number: u64) -> Result<(), StorageError> {
+    async fn handle_root_updated(
+        &self,
+        data: &[Felt],
+        block_number: u64,
+    ) -> Result<(), StorageError> {
         if data.len() < 4 {
             return Ok(());
         }
@@ -307,7 +321,11 @@ impl IndexerService {
         let token = data[3];
 
         let token_hex = felt_to_hex(&token);
-        let last_flushed = self.storage.get_latest_leaf_count(&token_hex).await?.unwrap_or(0);
+        let last_flushed = self
+            .storage
+            .get_latest_leaf_count(&token_hex)
+            .await?
+            .unwrap_or(0);
         let (leaf_count, expected_root) = {
             let mut trees = self.trees.write().await;
             let tree = trees
@@ -338,7 +356,9 @@ impl IndexerService {
         };
         let inserted = self.storage.insert_root(record).await?;
         let mut roots_cache = self.roots_cache.write().await;
-        let entry = roots_cache.entry(token_hex.clone()).or_insert_with(VecDeque::new);
+        let entry = roots_cache
+            .entry(token_hex.clone())
+            .or_insert_with(VecDeque::new);
         entry.push_front(RootCacheEntry {
             root_hash: new_root_hex.clone(),
             leaf_count,
@@ -469,7 +489,11 @@ impl IndexerService {
         let new_root = data[1];
         let root_index = felt_to_u64(&data[2])?;
         let token_hex = "position".to_string();
-        let last_flushed = self.storage.get_latest_leaf_count(&token_hex).await?.unwrap_or(0);
+        let last_flushed = self
+            .storage
+            .get_latest_leaf_count(&token_hex)
+            .await?
+            .unwrap_or(0);
         let (leaf_count, expected_root) = {
             let mut trees = self.trees.write().await;
             let tree = trees
@@ -499,7 +523,9 @@ impl IndexerService {
         };
         let inserted = self.storage.insert_root(record).await?;
         let mut roots_cache = self.roots_cache.write().await;
-        let entry = roots_cache.entry(token_hex.clone()).or_insert_with(VecDeque::new);
+        let entry = roots_cache
+            .entry(token_hex.clone())
+            .or_insert_with(VecDeque::new);
         entry.push_front(RootCacheEntry {
             root_hash: new_root_hex.clone(),
             leaf_count,
@@ -546,7 +572,9 @@ impl IndexerService {
         }
         let nullifier = data[0];
         let nullifier_hex = felt_to_hex(&nullifier);
-        self.storage.insert_nullifier(&nullifier_hex, block_number).await?;
+        self.storage
+            .insert_nullifier(&nullifier_hex, block_number)
+            .await?;
         println!("[asp] nullifier used {}", nullifier_hex);
         Ok(())
     }
@@ -574,14 +602,9 @@ impl IndexerService {
             }
         }
     }
-
 }
 
-fn resolve_leaf_count_for_root(
-    tree: &MerkleTree,
-    root: Felt,
-    last_flushed: u64,
-) -> Option<u64> {
+fn resolve_leaf_count_for_root(tree: &MerkleTree, root: Felt, last_flushed: u64) -> Option<u64> {
     let current = tree.next_index();
     if tree.root() == root {
         return Some(current);

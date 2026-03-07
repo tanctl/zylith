@@ -1,12 +1,12 @@
-use starknet::{ContractAddress, get_caller_address};
 use starknet::storage::{
     Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
     StoragePointerWriteAccess,
 };
-use zylith::interfaces::IERC20::IERC20;
-use zylith::core::PoolAdapter::IPoolAdapter;
+use starknet::{ContractAddress, get_caller_address};
 use zylith::clmm::components::owned::IOwned;
 use zylith::clmm::types::fees_per_liquidity::FeesPerLiquidity;
+use zylith::core::PoolAdapter::IPoolAdapter;
+use zylith::interfaces::IERC20::IERC20;
 use zylith::privacy::ShieldedNotes::MerkleProof;
 
 const MAX_U128: u128 = 0xffffffffffffffffffffffffffffffff;
@@ -14,9 +14,11 @@ const HIGH_BIT_U128: u128 = 0x80000000000000000000000000000000;
 
 #[starknet::contract]
 pub mod MockERC20 {
-    use super::{ContractAddress, IERC20, Map, StorageMapReadAccess, StorageMapWriteAccess};
-    use super::{StoragePointerReadAccess, StoragePointerWriteAccess, get_caller_address};
     use core::num::traits::Zero;
+    use super::{
+        ContractAddress, IERC20, Map, StorageMapReadAccess, StorageMapWriteAccess,
+        StoragePointerReadAccess, StoragePointerWriteAccess, get_caller_address,
+    };
 
     #[storage]
     struct Storage {
@@ -67,7 +69,9 @@ pub mod MockERC20 {
             self.balances.read(owner).into()
         }
 
-        fn allowance(self: @ContractState, owner: ContractAddress, spender: ContractAddress) -> u256 {
+        fn allowance(
+            self: @ContractState, owner: ContractAddress, spender: ContractAddress,
+        ) -> u256 {
             self.allowances.read((owner, spender)).into()
         }
 
@@ -128,8 +132,11 @@ pub mod MockERC20 {
 
 #[starknet::contract]
 pub mod MockCore {
-    use super::{ContractAddress, FeesPerLiquidity, IOwned};
-    use super::{StoragePointerReadAccess, StoragePointerWriteAccess, get_caller_address};
+    use core::num::traits::Zero;
+    use super::{
+        ContractAddress, FeesPerLiquidity, IOwned, StoragePointerReadAccess,
+        StoragePointerWriteAccess, get_caller_address,
+    };
 
     #[storage]
     struct Storage {
@@ -145,9 +152,7 @@ pub mod MockCore {
 
     #[constructor]
     fn constructor(
-        ref self: ContractState,
-        owner: ContractAddress,
-        authorized_adapter: ContractAddress,
+        ref self: ContractState, owner: ContractAddress, authorized_adapter: ContractAddress,
     ) {
         assert(owner.is_non_zero(), 'OWNER_ZERO');
         assert(authorized_adapter.is_non_zero(), 'ADAPTER_ZERO');
@@ -206,10 +211,13 @@ pub mod MockCore {
 
 #[starknet::contract]
 pub mod MockPoolAdapter {
-    use super::{ContractAddress, HIGH_BIT_U128, IPoolAdapter, MAX_U128};
-    use super::{StoragePointerReadAccess, StoragePointerWriteAccess, get_caller_address};
     use core::array::SpanTrait;
+    use core::num::traits::Zero;
     use zylith::constants::generated as generated_constants;
+    use super::{
+        ContractAddress, HIGH_BIT_U128, IPoolAdapter, MAX_U128, StoragePointerReadAccess,
+        StoragePointerWriteAccess, get_caller_address,
+    };
 
     #[storage]
     struct Storage {
@@ -230,9 +238,7 @@ pub mod MockPoolAdapter {
 
     #[constructor]
     fn constructor(
-        ref self: ContractState,
-        core_address: ContractAddress,
-        authorized_pool: ContractAddress,
+        ref self: ContractState, core_address: ContractAddress, authorized_pool: ContractAddress,
     ) {
         assert(authorized_pool.is_non_zero(), 'POOL_ZERO');
         self.core_address.write(core_address);
@@ -254,6 +260,12 @@ pub mod MockPoolAdapter {
 
         fn get_authorized_pool(self: @ContractState) -> ContractAddress {
             self.authorized_pool.read()
+        }
+
+        fn set_authorized_pool(ref self: ContractState, authorized_pool: ContractAddress) {
+            assert(get_caller_address() == self.authorized_pool.read(), 'not authorized');
+            assert(authorized_pool.is_non_zero(), 'POOL_ZERO');
+            self.authorized_pool.write(authorized_pool);
         }
 
         fn get_sqrt_price(self: @ContractState) -> u256 {
@@ -294,11 +306,11 @@ pub mod MockPoolAdapter {
             assert(get_caller_address() == self.authorized_pool.read(), 'not authorized');
             let sqrt_price_end = *public_inputs.at(4);
             let liquidity_before: u256 = *public_inputs.at(5);
-            let max_steps: usize = generated_constants::MAX_SWAP_STEPS;
-            let fee_growth_0_start: usize = 13 + (max_steps * 4);
-            let fee_growth_1_start: usize = fee_growth_0_start + max_steps;
-            let fee_growth_0_after = *public_inputs.at(fee_growth_0_start + (max_steps - 1));
-            let fee_growth_1_after = *public_inputs.at(fee_growth_1_start + (max_steps - 1));
+            let swap_steps = infer_swap_steps(public_inputs.len());
+            let fee_growth_0_start: usize = 13 + (swap_steps * 4);
+            let fee_growth_1_start: usize = fee_growth_0_start + swap_steps;
+            let fee_growth_0_after = *public_inputs.at(fee_growth_0_start + (swap_steps - 1));
+            let fee_growth_1_after = *public_inputs.at(fee_growth_1_start + (swap_steps - 1));
 
             self.sqrt_price.write(sqrt_price_end);
             self.liquidity.write(liquidity_before.low);
@@ -332,16 +344,18 @@ pub mod MockPoolAdapter {
             assert(get_caller_address() == self.authorized_pool.read(), 'not authorized');
             let current = self.liquidity.read();
             let (sign, mag) = parse_liquidity_delta(liquidity_delta);
-            let updated = if sign { current - mag } else { current + mag };
+            let updated = if sign {
+                current - mag
+            } else {
+                current + mag
+            };
             self.liquidity.write(updated);
             self.fee_growth_global_0.write(fee_growth_global_0);
             self.fee_growth_global_1.write(fee_growth_global_1);
         }
 
         fn apply_protocol_fee_withdraw(
-            ref self: ContractState,
-            token: ContractAddress,
-            amount: u128,
+            ref self: ContractState, token: ContractAddress, amount: u128,
         ) {
             let _ = token;
             let _ = amount;
@@ -379,15 +393,26 @@ pub mod MockPoolAdapter {
             (true, mag)
         }
     }
+
+    fn infer_swap_steps(public_inputs_len: usize) -> usize {
+        let fixed_len: usize = 16 + (2 * (generated_constants::MAX_INPUT_NOTES - 1));
+        assert(public_inputs_len >= fixed_len, 'SWAP_INPUTS_LEN');
+        let dynamic_len = public_inputs_len - fixed_len;
+        assert(dynamic_len % 6 == 0, 'SWAP_INPUTS_LEN');
+        let swap_steps = dynamic_len / 6;
+        assert((swap_steps == 4) | (swap_steps == 8), 'SWAP_INPUTS_LEN');
+        swap_steps
+    }
 }
 
 #[starknet::contract]
 pub mod MockShieldedNotes {
+    use core::array::SpanTrait;
+    use core::num::traits::Zero;
     use super::{
-        ContractAddress, Map, StorageMapReadAccess, StorageMapWriteAccess, MerkleProof,
+        ContractAddress, Map, MerkleProof, StorageMapReadAccess, StorageMapWriteAccess,
         StoragePointerReadAccess, StoragePointerWriteAccess,
     };
-    use core::array::SpanTrait;
 
     #[storage]
     struct Storage {
@@ -454,7 +479,9 @@ pub mod MockShieldedNotes {
             self.nullifiers.read(nullifier)
         }
 
-        fn verify_membership(self: @ContractState, token: ContractAddress, proof: MerkleProof) -> bool {
+        fn verify_membership(
+            self: @ContractState, token: ContractAddress, proof: MerkleProof,
+        ) -> bool {
             let _ = token;
             let _ = proof;
             true
@@ -466,7 +493,11 @@ pub mod MockShieldedNotes {
         }
 
         fn is_known_root(self: @ContractState, token: ContractAddress, root: felt252) -> bool {
-            if token == self.token0.read() { root == self.root0.read() } else { root == self.root1.read() }
+            if token == self.token0.read() {
+                root == self.root0.read()
+            } else {
+                root == self.root1.read()
+            }
         }
 
         fn is_known_position_root(self: @ContractState, root: felt252) -> bool {
@@ -493,7 +524,7 @@ pub mod MockShieldedNotes {
         }
 
         fn append_position_commitment(
-            ref self: ContractState, commitment: felt252, proof: MerkleProof
+            ref self: ContractState, commitment: felt252, proof: MerkleProof,
         ) -> u64 {
             let _ = commitment;
             let _ = proof;
@@ -515,11 +546,7 @@ pub mod MockShieldedNotes {
             }
         }
 
-        fn accrue_protocol_fees(
-            ref self: ContractState,
-            token: ContractAddress,
-            amount: u128,
-        ) {
+        fn accrue_protocol_fees(ref self: ContractState, token: ContractAddress, amount: u128) {
             if token == self.token0.read() {
                 self.protocol_fee_total_0.write(self.protocol_fee_total_0.read() + amount);
             } else {
@@ -551,7 +578,7 @@ pub mod MockShieldedNotes {
     #[abi(embed_v0)]
     impl MockImpl of MockShieldedNotesAdmin<ContractState> {
         fn set_roots(
-            ref self: ContractState, root0: felt252, root1: felt252, root_position: felt252
+            ref self: ContractState, root0: felt252, root1: felt252, root_position: felt252,
         ) {
             self.root0.write(root0);
             self.root1.write(root1);
@@ -559,11 +586,7 @@ pub mod MockShieldedNotes {
         }
 
         fn get_commitment_counts(self: @ContractState) -> (u64, u64, u64) {
-            (
-                self.next_index0.read(),
-                self.next_index1.read(),
-                self.next_index_position.read(),
-            )
+            (self.next_index0.read(), self.next_index1.read(), self.next_index_position.read())
         }
 
         fn get_protocol_fee_totals(self: @ContractState) -> (u128, u128) {
@@ -582,7 +605,7 @@ pub mod MockShieldedNotes {
     pub trait MockShieldedNotesCore<TContractState> {
         fn is_nullifier_used(self: @TContractState, nullifier: felt252) -> bool;
         fn verify_membership(
-            self: @TContractState, token: ContractAddress, proof: MerkleProof
+            self: @TContractState, token: ContractAddress, proof: MerkleProof,
         ) -> bool;
         fn verify_position_membership(self: @TContractState, proof: MerkleProof) -> bool;
         fn is_known_root(self: @TContractState, token: ContractAddress, root: felt252) -> bool;
@@ -594,13 +617,11 @@ pub mod MockShieldedNotes {
             proof: MerkleProof,
         ) -> u64;
         fn append_position_commitment(
-            ref self: TContractState, commitment: felt252, proof: MerkleProof
+            ref self: TContractState, commitment: felt252, proof: MerkleProof,
         ) -> u64;
         fn mark_nullifier_used(ref self: TContractState, nullifier: felt252);
         fn mark_nullifiers_used(ref self: TContractState, nullifiers: Span<felt252>);
-        fn accrue_protocol_fees(
-            ref self: TContractState, token: ContractAddress, amount: u128
-        );
+        fn accrue_protocol_fees(ref self: TContractState, token: ContractAddress, amount: u128);
         fn withdraw_protocol_fees(
             ref self: TContractState,
             token: ContractAddress,
@@ -613,7 +634,7 @@ pub mod MockShieldedNotes {
     #[starknet::interface]
     pub trait MockShieldedNotesAdmin<TContractState> {
         fn set_roots(
-            ref self: TContractState, root0: felt252, root1: felt252, root_position: felt252
+            ref self: TContractState, root0: felt252, root1: felt252, root_position: felt252,
         );
         fn get_commitment_counts(self: @TContractState) -> (u64, u64, u64);
         fn get_protocol_fee_totals(self: @TContractState) -> (u128, u128);
@@ -673,7 +694,7 @@ pub mod MockGaragaVerifier {
     #[abi(embed_v0)]
     impl GaragaImpl of IGaragaVerifier<ContractState> {
         fn verify_groth16_proof_bn254(
-            self: @ContractState, calldata: Span<felt252>
+            self: @ContractState, calldata: Span<felt252>,
         ) -> Option<Span<u256>> {
             let _ = calldata;
             if !self.should_verify.read() {

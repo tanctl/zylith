@@ -60,7 +60,9 @@ impl MerkleTree {
 
     pub fn insert_at(&mut self, index: u64, leaf: Felt) -> Result<(u64, Felt), MerkleError> {
         if leaf == Felt::ZERO {
-            return Err(MerkleError::InvalidLeaf { reason: "commitment_zero" });
+            return Err(MerkleError::InvalidLeaf {
+                reason: "commitment_zero",
+            });
         }
         if leaf == self.zero_hashes[0] {
             return Err(MerkleError::InvalidLeaf {
@@ -254,12 +256,9 @@ fn empty_root(height: usize, zero_hashes: &[Felt]) -> Felt {
 }
 
 pub fn zero_leaf_hash() -> Felt {
-    ZERO_LEAF_HASH
-        .get_or_init(|| {
-            Felt::from_hex_be(generated_constants::ZERO_LEAF_HASH_HEX)
-                .expect("ZERO_LEAF_HASH invalid")
-        })
-        .clone()
+    *ZERO_LEAF_HASH.get_or_init(|| {
+        Felt::from_hex_be(generated_constants::ZERO_LEAF_HASH_HEX).expect("ZERO_LEAF_HASH invalid")
+    })
 }
 
 #[cfg(test)]
@@ -268,15 +267,14 @@ mod tests_extra {
     use starknet::core::types::FieldElement as Felt;
     use starknet_crypto::poseidon_hash;
 
-    fn compute_root_from_path(
-        leaf: Felt,
-        mut index: u64,
-        path: &[Felt],
-        indices: &[bool],
-    ) -> Felt {
+    fn compute_root_from_path(leaf: Felt, mut index: u64, path: &[Felt], indices: &[bool]) -> Felt {
         let mut hash = leaf;
         for (sibling, is_right) in path.iter().zip(indices.iter()) {
-            let (left, right) = if *is_right { (*sibling, hash) } else { (hash, *sibling) };
+            let (left, right) = if *is_right {
+                (*sibling, hash)
+            } else {
+                (hash, *sibling)
+            };
             hash = poseidon_hash(left, right);
             index /= 2;
         }

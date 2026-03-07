@@ -61,7 +61,11 @@ pub mod HistoricalRoots0 {
             if current == 0 {
                 return 0;
             }
-            let oldest = if current > cap { current - cap } else { 0 };
+            let oldest = if current > cap {
+                current - cap
+            } else {
+                0
+            };
             assert((index >= oldest) & (index < current), 'ROOT_INDEX_RANGE');
             self.roots.read(index % cap)
         }

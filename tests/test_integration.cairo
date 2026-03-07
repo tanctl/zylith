@@ -3,33 +3,47 @@ use core::serde::Serde;
 use core::traits::TryInto;
 use snforge_std::{start_cheat_caller_address, test_address};
 use starknet::ContractAddress;
-
-use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
-use zylith::core::PoolAdapter::IPoolAdapterDispatcher;
-use zylith::core::PoolAdapter::IPoolAdapterDispatcherTrait;
 use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
 use zylith::clmm::types::i129::i129;
+use zylith::core::PoolAdapter::{IPoolAdapterDispatcher, IPoolAdapterDispatcherTrait};
+use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
 use zylith::privacy::ShieldedNotes::MerkleProof;
-
-use crate::common::{deploy_contract_at, u256_from_u128};
 use crate::common::mock_proof_generator::{
-    build_swap_outputs, build_swap_outputs_with_extras, build_liquidity_add_outputs,
-    build_liquidity_add_outputs_with_notes, build_liquidity_remove_outputs,
+    build_liquidity_add_outputs, build_liquidity_add_outputs_with_notes,
+    build_liquidity_remove_outputs, build_swap_outputs, build_swap_outputs_with_extras,
 };
+use crate::common::mocks::MockCore::{MockCoreExternalDispatcher, MockCoreExternalDispatcherTrait};
 use crate::common::mocks::MockGaragaVerifier::{
     MockGaragaVerifierExternalDispatcher, MockGaragaVerifierExternalDispatcherTrait,
-};
-use crate::common::mocks::MockShieldedNotes::{
-    MockShieldedNotesCoreDispatcher, MockShieldedNotesCoreDispatcherTrait,
-    MockShieldedNotesAdminDispatcher, MockShieldedNotesAdminDispatcherTrait,
 };
 use crate::common::mocks::MockPoolAdapter::{
     MockPoolAdapterExternalDispatcher, MockPoolAdapterExternalDispatcherTrait,
 };
+use crate::common::mocks::MockShieldedNotes::{
+    MockShieldedNotesAdminDispatcher, MockShieldedNotesAdminDispatcherTrait,
+    MockShieldedNotesCoreDispatcher, MockShieldedNotesCoreDispatcherTrait,
+};
+use crate::common::{deploy_contract_at, u256_from_u128};
 
 const FEE_ONE_PERCENT: u128 = 0x28f5c28f5c28f5c28f5c28f5c28f5c2;
+const SWAP_STEPS_PREFIX: felt252 = 'SWAP_STEPS';
+const MAX_SWAP_STEPS: felt252 = 8;
 
-fn setup_integration_env() -> (ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress) {
+fn swap_calldata(zero_for_one: bool) -> Array<felt252> {
+    let mut calldata = array![];
+    calldata.append(SWAP_STEPS_PREFIX);
+    calldata.append(MAX_SWAP_STEPS);
+    calldata.append(if zero_for_one {
+        1
+    } else {
+        0
+    });
+    calldata
+}
+
+fn setup_integration_env() -> (
+    ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress,
+) {
     let pool_address = 0x1000.try_into().expect('ADDRESS_RANGE');
     let core_address = 0x1100.try_into().expect('ADDRESS_RANGE');
     let adapter_address = 0x1200.try_into().expect('ADDRESS_RANGE');
@@ -153,7 +167,7 @@ fn setup_integration_env_with_fee(
     (pool, notes_address, garaga_address, adapter_address)
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_full_swap_flow() {
     let (pool, notes_address, garaga_address, adapter_address) = setup_integration_env();
@@ -163,24 +177,30 @@ fn test_full_swap_flow() {
 
     let commitment_in: felt252 = 1001;
     let dummy_proof = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    let _ = notes_core.append_commitment(
-        commitment_in,
-        0x2000.try_into().expect('ADDRESS_RANGE'),
-        dummy_proof,
-    );
+    let _ = notes_core
+        .append_commitment(commitment_in, 0x2000.try_into().expect('ADDRESS_RANGE'), dummy_proof);
     let (count0_before, count1_before, _) = notes_admin.get_commitment_counts();
 
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs(
-        111, 5001, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        2002, 0, false, true, commitment_in, 0, 1,
+        111,
+        5001,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        2002,
+        0,
+        false,
+        true,
+        commitment_in,
+        0,
+        1,
     );
     verifier.set_outputs(outputs.span());
 
@@ -188,8 +208,7 @@ fn test_full_swap_flow() {
     adapter.set_next_tick(-1);
     let adapter_state = IPoolAdapterDispatcher { contract_address: adapter_address };
     start_cheat_caller_address(adapter_address, 0x1000.try_into().expect('ADDRESS_RANGE'));
-    adapter_state
-        .set_pool_state(sqrt_start, 0, 1_u128, 1000, u256_from_u128(0), u256_from_u128(0));
+    adapter_state.set_pool_state(sqrt_start, 0, 1_u128, 1000, u256_from_u128(0), u256_from_u128(0));
 
     let proof = MerkleProof {
         root: 111,
@@ -199,20 +218,17 @@ fn test_full_swap_flow() {
         indices: array![].span(),
     };
     let output_proof = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.swap_private(array![].span(), array![proof].span(), array![output_proof].span());
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), array![proof].span(), array![output_proof].span());
 
     let (count0_after, count1_after, _) = notes_admin.get_commitment_counts();
     assert(count0_after == count0_before, 'token0 count');
     assert(count1_after == (count1_before + 1), 'token1 output');
 }
 
-#[available_gas(max: 100000000)]
+#[available_gas(l2_gas: 100000000)]
 #[test]
 fn test_full_swap_flow_multi_note() {
     let (pool, notes_address, garaga_address, adapter_address) = setup_integration_env();
@@ -223,29 +239,32 @@ fn test_full_swap_flow_multi_note() {
     let commitment_in0: felt252 = 1001;
     let commitment_in1: felt252 = 1002;
     let dummy_proof = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    let _ = notes_core.append_commitment(
-        commitment_in0,
-        0x2000.try_into().expect('ADDRESS_RANGE'),
-        dummy_proof,
-    );
-    let _ = notes_core.append_commitment(
-        commitment_in1,
-        0x2000.try_into().expect('ADDRESS_RANGE'),
-        dummy_proof,
-    );
+    let _ = notes_core
+        .append_commitment(commitment_in0, 0x2000.try_into().expect('ADDRESS_RANGE'), dummy_proof);
+    let _ = notes_core
+        .append_commitment(commitment_in1, 0x2000.try_into().expect('ADDRESS_RANGE'), dummy_proof);
     let (count0_before, count1_before, _) = notes_admin.get_commitment_counts();
 
     let sqrt_start = tick_to_sqrt_ratio(0_i128.into());
     let sqrt_end = tick_to_sqrt_ratio((-1_i128).into());
     let outputs = build_swap_outputs_with_extras(
-        111, 5001, sqrt_start, sqrt_end, 1000, 30, u256_from_u128(0), u256_from_u128(0),
-        2002, 0, false, true, commitment_in0, 0, 2,
+        111,
+        5001,
+        sqrt_start,
+        sqrt_end,
+        1000,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        2002,
+        0,
+        false,
+        true,
+        commitment_in0,
+        0,
+        2,
         array![5002].span(),
         array![commitment_in1].span(),
     );
@@ -255,8 +274,7 @@ fn test_full_swap_flow_multi_note() {
     adapter.set_next_tick(-1);
     let adapter_state = IPoolAdapterDispatcher { contract_address: adapter_address };
     start_cheat_caller_address(adapter_address, 0x1000.try_into().expect('ADDRESS_RANGE'));
-    adapter_state
-        .set_pool_state(sqrt_start, 0, 1_u128, 1000, u256_from_u128(0), u256_from_u128(0));
+    adapter_state.set_pool_state(sqrt_start, 0, 1_u128, 1000, u256_from_u128(0), u256_from_u128(0));
 
     let proof0 = MerkleProof {
         root: 111,
@@ -273,17 +291,10 @@ fn test_full_swap_flow_multi_note() {
         indices: array![].span(),
     };
     let output_proof = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.swap_private(
-        array![].span(),
-        array![proof0, proof1].span(),
-        array![output_proof].span(),
-    );
+    let calldata = swap_calldata(true);
+    pool.swap_private(calldata.span(), array![proof0, proof1].span(), array![output_proof].span());
 
     let (count0_after, count1_after, _) = notes_admin.get_commitment_counts();
     assert(count0_after == count0_before, 'token0 count');
@@ -304,12 +315,32 @@ fn test_full_lp_flow() {
     let input_commitment0: felt252 = 8001;
     let nullifier0: felt252 = 8002;
     let outputs_add = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio(i129 { mag: 10, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 10, sign: false }),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 3001,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        3001,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs_add.span());
     let proof0 = MerkleProof {
@@ -320,44 +351,49 @@ fn test_full_lp_flow() {
         indices: array![].span(),
     };
     let insert_position_proof = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof0].span(),
-        array![].span(),
-        array![].span(),
-        array![insert_position_proof].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof0].span(),
+            array![].span(),
+            array![].span(),
+            array![insert_position_proof].span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let outputs_remove = build_liquidity_remove_outputs(
-        111, 222, 333, 4001, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        4001,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio(i129 { mag: 10, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 10, sign: false }),
-        100, 50, 30, u256_from_u128(0), u256_from_u128(0), 3001,
-        u256_from_u128(0), u256_from_u128(0), 0, 0,
+        100,
+        50,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        3001,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
     );
     verifier.set_outputs(outputs_remove.span());
     let proof = MerkleProof {
-        root: 333,
-        commitment: 3001,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 333, commitment: 3001, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.remove_liquidity_private(
-        array![].span(),
-        proof,
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .remove_liquidity_private(
+            array![].span(), proof, array![].span(), array![].span(), array![].span(),
+        );
 
     let (_, _, position_count) = notes_admin.get_commitment_counts();
     assert(position_count == 1, 'position commitment count');
@@ -377,12 +413,32 @@ fn test_full_lp_update_flow() {
     let input_commitment0: felt252 = 8301;
     let nullifier0: felt252 = 8302;
     let outputs_add = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio(i129 { mag: 10, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 10, sign: false }),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 7001,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        7001,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs_add.span());
     let proof0 = MerkleProof {
@@ -393,33 +449,51 @@ fn test_full_lp_update_flow() {
         indices: array![].span(),
     };
     let insert_position = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof0].span(),
-        array![].span(),
-        array![].span(),
-        array![insert_position].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof0].span(),
+            array![].span(),
+            array![].span(),
+            array![insert_position].span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let (count0_mid, count1_mid, position_mid) = notes_admin.get_commitment_counts();
 
     let input_commitment1: felt252 = 8303;
     let nullifier1: felt252 = 8304;
     let outputs_update = build_liquidity_add_outputs_with_notes(
-        111, 222, 333, 9001, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        9001,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio(i129 { mag: 10, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 10, sign: false }),
-        100, 50, 30, u256_from_u128(0), u256_from_u128(0), 7001, 7002,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment1, 0, nullifier1, 0, 0, 0, 1, 0,
+        100,
+        50,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        7001,
+        7002,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment1,
+        0,
+        nullifier1,
+        0,
+        0,
+        0,
+        1,
+        0,
         array![].span(),
         array![].span(),
         array![].span(),
@@ -434,28 +508,21 @@ fn test_full_lp_update_flow() {
         indices: array![].span(),
     };
     let proof_position = MerkleProof {
-        root: 333,
-        commitment: 7001,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 333, commitment: 7001, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
     let insert_position_update = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof1].span(),
-        array![].span(),
-        array![proof_position].span(),
-        array![insert_position_update].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof1].span(),
+            array![].span(),
+            array![proof_position].span(),
+            array![insert_position_update].span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let (count0_after, count1_after, position_after) = notes_admin.get_commitment_counts();
     assert(count0_after == count0_mid, 'token0 count');
@@ -476,12 +543,32 @@ fn test_cross_tick_liquidity() {
     let input_commitment0: felt252 = 8101;
     let nullifier0: felt252 = 8102;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, -20, 20,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        -20,
+        20,
         tick_to_sqrt_ratio(i129 { mag: 20, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 20, sign: false }),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 4002,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        4002,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs.span());
     let proof0 = MerkleProof {
@@ -492,28 +579,23 @@ fn test_cross_tick_liquidity() {
         indices: array![].span(),
     };
     let insert_position = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof0].span(),
-        array![].span(),
-        array![].span(),
-        array![insert_position].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof0].span(),
+            array![].span(),
+            array![].span(),
+            array![insert_position].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
 fn test_protocol_fees_collection() {
-    let (pool, notes_address, garaga_address, _) = setup_integration_env_with_fee(
-        FEE_ONE_PERCENT,
-    );
+    let (pool, notes_address, garaga_address, _) = setup_integration_env_with_fee(FEE_ONE_PERCENT);
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     let notes_admin = MockShieldedNotesAdminDispatcher { contract_address: notes_address };
     let core = MockCoreExternalDispatcher {
@@ -526,12 +608,32 @@ fn test_protocol_fees_collection() {
     let input_commitment0: felt252 = 8201;
     let nullifier0: felt252 = 8202;
     let outputs_add = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio(i129 { mag: 10, sign: true }),
         tick_to_sqrt_ratio(i129 { mag: 10, sign: false }),
-        0, liquidity_amount, FEE_ONE_PERCENT, u256_from_u128(0), u256_from_u128(0), 0, 5001,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        liquidity_amount,
+        FEE_ONE_PERCENT,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        5001,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs_add.span());
     let proof0 = MerkleProof {
@@ -542,38 +644,49 @@ fn test_protocol_fees_collection() {
         indices: array![].span(),
     };
     let insert_position = MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![proof0].span(),
-        array![].span(),
-        array![].span(),
-        array![insert_position].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![proof0].span(),
+            array![].span(),
+            array![].span(),
+            array![insert_position].span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let outputs_remove = build_liquidity_remove_outputs(
-        111, 222, 333, 6001, sqrt_start, 0, -10, 10,
+        111,
+        222,
+        333,
+        6001,
+        sqrt_start,
+        0,
+        -10,
+        10,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        liquidity_amount, liquidity_amount, FEE_ONE_PERCENT, u256_from_u128(0), u256_from_u128(0), 5001,
-        u256_from_u128(0), u256_from_u128(0), 0, 0,
+        liquidity_amount,
+        liquidity_amount,
+        FEE_ONE_PERCENT,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        5001,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
     );
     verifier.set_outputs(outputs_remove.span());
-    let proof = MerkleProof { root: 333, commitment: 5001, leaf_index: 0, path: array![].span(), indices: array![].span() };
-    pool.remove_liquidity_private(
-        array![].span(),
-        proof,
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    let proof = MerkleProof {
+        root: 333, commitment: 5001, leaf_index: 0, path: array![].span(), indices: array![].span(),
+    };
+    pool
+        .remove_liquidity_private(
+            array![].span(), proof, array![].span(), array![].span(), array![].span(),
+        );
 
     let (fee0, fee1) = notes_admin.get_protocol_fee_totals();
     assert((fee0 > 0) | (fee1 > 0), 'fees collected');

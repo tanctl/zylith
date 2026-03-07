@@ -1,10 +1,10 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { expect } = require('chai');
 const circomTester = require('circom_tester').wasm;
+const circuitCache = new Map();
 
 const STARK_MODULUS =
   BigInt('0x800000000000011000000000000000000000000000000000000000000000001');
@@ -17,23 +17,31 @@ function toBigInt(value) {
 }
 
 async function loadCircuit(relPath) {
-  const circuitPath = path.join(__dirname, '..', relPath);
-  const tmpBase =
-    process.env.ZYLITH_CIRCUITS_TMP ||
-    path.join(os.tmpdir(), 'zylith-circuits');
-  await fs.promises.mkdir(tmpBase, { recursive: true });
-  const outputDir = path.join(
-    tmpBase,
-    `circom_${path.basename(relPath, path.extname(relPath))}`
-  );
-  await fs.promises.rm(outputDir, { recursive: true, force: true });
-  await fs.promises.mkdir(outputDir, { recursive: true });
-  const includePaths = [
-    path.join(__dirname, '..'),
-    path.join(__dirname, '..', 'node_modules'),
-    path.join(__dirname, '..', 'node_modules', 'circomlib', 'circuits'),
-  ];
-  return circomTester(circuitPath, { include: includePaths, output: outputDir });
+  if (circuitCache.has(relPath)) {
+    return circuitCache.get(relPath);
+  }
+  const circuitPromise = (async () => {
+    const circuitPath = path.join(__dirname, '..', relPath);
+    const defaultTmpBase = path.join(__dirname, '..', '.tmp', 'circuits');
+    const tmpBase =
+      process.env.ZYLITH_CIRCUITS_TMP ||
+      defaultTmpBase;
+    await fs.promises.mkdir(tmpBase, { recursive: true });
+    const outputDir = path.join(
+      tmpBase,
+      `circom_${path.basename(relPath, path.extname(relPath))}`
+    );
+    await fs.promises.rm(outputDir, { recursive: true, force: true });
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const includePaths = [
+      path.join(__dirname, '..'),
+      path.join(__dirname, '..', 'node_modules'),
+      path.join(__dirname, '..', 'node_modules', 'circomlib', 'circuits'),
+    ];
+    return circomTester(circuitPath, { include: includePaths, output: outputDir });
+  })();
+  circuitCache.set(relPath, circuitPromise);
+  return circuitPromise;
 }
 
 function loadVectorOrSkip(ctx, suite, name) {

@@ -17,14 +17,15 @@ use url::Url;
 use zylith_client::{
     compute_commitment, compute_position_commitment, generate_note_with_token_id,
     generate_nullifier_hash, generate_position_note, generate_position_nullifier_hash, parse_felt,
-    DepositClient, DepositRequest, LiquidityAddProveRequest, LiquidityClaimProveRequest,
-    LiquidityClaimRequest, LiquidityProveResult, LiquidityRemoveProveRequest, LiquidityRequest,
-    MerklePath, Note, PositionNote, SignedAmount, SwapClient, SwapProveRequest, SwapProveResult,
-    SwapQuoteRequest, WithdrawClient, WithdrawRequest, ZylithClient, ZylithConfig,
+    ChunkedSwapExecuteRequest, DepositClient, DepositRequest, LiquidityAddProveRequest,
+    LiquidityClaimProveRequest, LiquidityClaimRequest, LiquidityProveResult,
+    LiquidityRemoveProveRequest, LiquidityRequest, MerklePath, Note, PositionNote, SignedAmount,
+    SwapClient, SwapProveRequest, SwapProveResult, SwapQuoteRequest, WithdrawClient,
+    WithdrawRequest, ZylithClient, ZylithConfig,
 };
 use zylith_prover::{
-    prove_deposit, prove_withdraw, DepositWitnessInputs, ProofCalldata, WitnessValue,
-    WithdrawWitnessInputs,
+    prove_deposit, prove_withdraw, DepositWitnessInputs, ProofCalldata, WithdrawWitnessInputs,
+    WitnessValue,
 };
 
 #[derive(Parser)]
@@ -124,6 +125,26 @@ enum Commands {
         output_note_out: Option<PathBuf>,
         #[arg(long)]
         change_note_out: Option<PathBuf>,
+        #[arg(long)]
+        circuit_dir: Option<PathBuf>,
+        #[command(flatten)]
+        network: NetworkArgs,
+        #[command(flatten)]
+        account: AccountArgs,
+    },
+    SwapChunked {
+        #[arg(long, num_args = 1.., value_delimiter = ',')]
+        note_in: Vec<PathBuf>,
+        #[arg(long)]
+        pool_address: String,
+        #[arg(long)]
+        asp_url: String,
+        #[arg(long)]
+        zero_for_one: bool,
+        #[arg(long)]
+        sqrt_ratio_limit: Option<String>,
+        #[arg(long)]
+        final_change_note_out: Option<PathBuf>,
         #[arg(long)]
         circuit_dir: Option<PathBuf>,
         #[command(flatten)]
@@ -316,7 +337,6 @@ struct InsertPathResponse {
     path: Vec<String>,
     indices: Vec<bool>,
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -527,6 +547,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             write_note_output("output_note", output_note, output_note_out)?;
             write_note_output("change_note", change_note, change_note_out)?;
         }
+        Commands::SwapChunked {
+            note_in,
+            pool_address,
+            asp_url,
+            zero_for_one,
+            sqrt_ratio_limit,
+            final_change_note_out,
+            circuit_dir,
+            network,
+            account,
+        } => {
+            let pool_address = parse_felt_arg(&pool_address)?;
+            let notes = load_notes(&note_in)?;
+            if notes.is_empty() {
+                return Err("missing --note-in".into());
+            }
+            let sqrt_ratio_limit = match sqrt_ratio_limit {
+                Some(value) => Some(parse_u256_arg(&value)?),
+                None => None,
+            };
+
+            let account = build_account(&network, &account).await?;
+            let client = ZylithClient::new(ZylithConfig {
+                account,
+                asp_url: asp_url.clone(),
+                pool_address,
+                shielded_notes_address: Felt::ZERO,
+                token0: Felt::ZERO,
+                token1: Felt::ZERO,
+            });
+            let result = client
+                .execute_chunked_swap_exact_in(ChunkedSwapExecuteRequest {
+                    notes,
+                    zero_for_one,
+                    sqrt_ratio_limit,
+                    circuit_dir,
+                })
+                .await?;
+
+            println!("chunk_count={}", result.chunks.len());
+            println!("total_amount_out={}", result.total_amount_out);
+            println!(
+                "total_amount_in_consumed={}",
+                result.total_amount_in_consumed
+            );
+            for (idx, chunk) in result.chunks.iter().enumerate() {
+                println!("chunk[{idx}].tx_hash={}", chunk.tx_hash);
+                println!("chunk[{idx}].amount_out={}", chunk.amount_out);
+                println!(
+                    "chunk[{idx}].amount_in_consumed={}",
+                    chunk.amount_in_consumed
+                );
+                println!(
+                    "chunk[{idx}].selected_swap_steps={}",
+                    chunk.selected_swap_steps
+                );
+            }
+            write_note_list_output("output_note", &result.output_notes)?;
+            write_note_output(
+                "final_change_note",
+                result.final_change_note,
+                final_change_note_out,
+            )?;
+        }
         Commands::SwapQuote {
             pool_address,
             amount,
@@ -539,9 +623,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pool_address = parse_felt_arg(&pool_address)?;
             let sqrt_ratio_limit = parse_u256_arg(&sqrt_ratio_limit)?;
-            let is_token1 = if exact_out { zero_for_one } else { !zero_for_one };
+            let is_token1 = if exact_out {
+                zero_for_one
+            } else {
+                !zero_for_one
+            };
             let request = SwapQuoteRequest {
-                amount: SignedAmount { mag: amount, sign: exact_out },
+                amount: SignedAmount {
+                    mag: amount,
+                    sign: exact_out,
+                },
                 is_token1,
                 sqrt_ratio_limit,
                 skip_ahead,
@@ -641,9 +732,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .await?;
             println!("tx_hash={tx_hash}");
-            write_position_note_output("position_note", output_position_note, output_position_note_out)?;
-            write_note_output("output_note_token0", output_note_token0, output_note_token0_out)?;
-            write_note_output("output_note_token1", output_note_token1, output_note_token1_out)?;
+            write_position_note_output(
+                "position_note",
+                output_position_note,
+                output_position_note_out,
+            )?;
+            write_note_output(
+                "output_note_token0",
+                output_note_token0,
+                output_note_token0_out,
+            )?;
+            write_note_output(
+                "output_note_token1",
+                output_note_token1,
+                output_note_token1_out,
+            )?;
         }
         Commands::LiquidityRemove {
             asp_url,
@@ -714,9 +817,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
             println!("tx_hash={tx_hash}");
-            write_position_note_output("position_note", output_position_note, output_position_note_out)?;
-            write_note_output("output_note_token0", output_note_token0, output_note_token0_out)?;
-            write_note_output("output_note_token1", output_note_token1, output_note_token1_out)?;
+            write_position_note_output(
+                "position_note",
+                output_position_note,
+                output_position_note_out,
+            )?;
+            write_note_output(
+                "output_note_token0",
+                output_note_token0,
+                output_note_token0_out,
+            )?;
+            write_note_output(
+                "output_note_token1",
+                output_note_token1,
+                output_note_token1_out,
+            )?;
         }
         Commands::LiquidityClaim {
             asp_url,
@@ -784,9 +899,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let tx_hash = client.claim_liquidity_fees(claim).await?;
             println!("tx_hash={tx_hash}");
-            write_position_note_output("position_note", output_position_note, output_position_note_out)?;
-            write_note_output("output_note_token0", output_note_token0, output_note_token0_out)?;
-            write_note_output("output_note_token1", output_note_token1, output_note_token1_out)?;
+            write_position_note_output(
+                "position_note",
+                output_position_note,
+                output_position_note_out,
+            )?;
+            write_note_output(
+                "output_note_token0",
+                output_note_token0,
+                output_note_token0_out,
+            )?;
+            write_note_output(
+                "output_note_token1",
+                output_note_token1,
+                output_note_token1_out,
+            )?;
         }
         Commands::PoolState {
             pool_address,
@@ -826,10 +953,7 @@ async fn build_account(
     let provider = JsonRpcClient::new(HttpTransport::new(rpc_url));
     let chain_id = match &network.chain_id {
         Some(chain_id) => parse_felt_arg(chain_id)?,
-        None => provider
-            .chain_id()
-            .await
-            .map_err(|e| e.to_string())?,
+        None => provider.chain_id().await.map_err(|e| e.to_string())?,
     };
     let account_address = parse_felt_arg(&account.account_address)?;
     let private_key = parse_felt_arg(&account.private_key)?;
@@ -969,11 +1093,7 @@ fn load_position_note(path: &Path) -> Result<PositionNote, String> {
     })
 }
 
-fn write_note_output(
-    label: &str,
-    note: Option<Note>,
-    out: Option<PathBuf>,
-) -> Result<(), String> {
+fn write_note_output(label: &str, note: Option<Note>, out: Option<PathBuf>) -> Result<(), String> {
     let Some(note) = note else {
         return Ok(());
     };
@@ -988,6 +1108,13 @@ fn write_note_output(
         fs::write(path, serialized).map_err(|e| e.to_string())?;
     } else {
         println!("{label}={serialized}");
+    }
+    Ok(())
+}
+
+fn write_note_list_output(label: &str, notes: &[Note]) -> Result<(), String> {
+    for (idx, note) in notes.iter().cloned().enumerate() {
+        write_note_output(&format!("{label}[{idx}]"), Some(note), None)?;
     }
     Ok(())
 }
@@ -1017,7 +1144,6 @@ fn write_position_note_output(
     }
     Ok(())
 }
-
 
 async fn asp_fetch_merkle_path(
     asp_url: &str,
@@ -1132,11 +1258,7 @@ async fn asp_fetch_latest_root(asp_url: &str, token: &str) -> Result<(Felt, u64,
         token
     );
     let client = asp_client()?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("asp root error: {}", response.status()));
     }
@@ -1149,18 +1271,15 @@ async fn asp_fetch_latest_root(asp_url: &str, token: &str) -> Result<(Felt, u64,
     Ok((root, body.root_index, leaf_count))
 }
 
-async fn asp_fetch_root_at(
-    asp_url: &str,
-    token: &str,
-    index: u64,
-) -> Result<Felt, String> {
-    let url = format!("{}/root/{}?token={}", asp_url.trim_end_matches('/'), index, token);
+async fn asp_fetch_root_at(asp_url: &str, token: &str, index: u64) -> Result<Felt, String> {
+    let url = format!(
+        "{}/root/{}?token={}",
+        asp_url.trim_end_matches('/'),
+        index,
+        token
+    );
     let client = asp_client()?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("asp root error: {}", response.status()));
     }
@@ -1228,11 +1347,10 @@ fn parse_bytes32(value: &str) -> Result<[u8; 32], String> {
         return Err("expected 32-byte hex string".to_string());
     }
     let mut out = [0u8; 32];
-    for i in 0..32 {
+    for (i, slot) in out.iter_mut().enumerate() {
         let start = i * 2;
-        let byte = u8::from_str_radix(&hex[start..start + 2], 16)
-            .map_err(|e| e.to_string())?;
-        out[i] = byte;
+        let byte = u8::from_str_radix(&hex[start..start + 2], 16).map_err(|e| e.to_string())?;
+        *slot = byte;
     }
     Ok(out)
 }

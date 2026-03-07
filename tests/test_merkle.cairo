@@ -1,9 +1,8 @@
+use MerkleTreeTester::{MerkleTreeTesterExternalDispatcher, MerkleTreeTesterExternalDispatcherTrait};
+use zylith::constants::generated as generated_constants;
 #[feature("deprecated_legacy_map")]
 use zylith::privacy::MerkleTree0::MerkleTree0 as MerkleTreeComponent;
-use zylith::constants::generated as generated_constants;
-
-use crate::common::{deploy_contract, merkle_proof_for_single_leaf, empty_root};
-use MerkleTreeTester::{MerkleTreeTesterExternalDispatcher, MerkleTreeTesterExternalDispatcherTrait};
+use crate::common::{deploy_contract, empty_root, merkle_proof_for_single_leaf};
 
 #[starknet::contract]
 pub mod MerkleTreeTester {

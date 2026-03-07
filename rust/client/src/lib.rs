@@ -22,12 +22,13 @@ pub use notes::{
     generate_position_nullifier_hash, EncryptedNote, Note, PositionNote,
 };
 pub use proofs::{
-    quote_liquidity_amounts, LiquidityAddProveRequest, LiquidityClaimProveRequest,
+    quote_liquidity_amounts, ChunkedSwapChunkResult, ChunkedSwapExecuteRequest,
+    ChunkedSwapExecuteResult, LiquidityAddProveRequest, LiquidityClaimProveRequest,
     LiquidityProveResult, LiquidityRemoveProveRequest, SwapProveRequest, SwapProveResult,
 };
 pub use swap::{
-    MerklePath, SignedAmount, SwapClient, SwapQuoteRequest, SwapRequest, SwapResult,
-    SwapStepQuote, SwapStepsQuote,
+    MerklePath, SignedAmount, SwapClient, SwapQuoteRequest, SwapRequest, SwapResult, SwapStepQuote,
+    SwapStepsQuote,
 };
 pub use utils::{
     felt252_to_u256, parse_event, parse_felt, poseidon_hash, u256_to_felt252, Address,

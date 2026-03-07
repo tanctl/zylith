@@ -1,25 +1,24 @@
+use core::array::ArrayTrait;
 #[feature("deprecated_legacy_map")]
 use core::serde::Serde;
-use core::array::ArrayTrait;
 use core::traits::TryInto;
 use snforge_std::{start_cheat_caller_address, test_address};
 use starknet::ContractAddress;
-
-use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
-use zylith::core::PoolAdapter::IPoolAdapterDispatcher;
-use zylith::core::PoolAdapter::IPoolAdapterDispatcherTrait;
-use zylith::clmm::math::ticks::{tick_to_sqrt_ratio};
 use zylith::clmm::math::ticks::constants::MAX_TICK_MAGNITUDE;
+use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
+use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
 use zylith::privacy::ShieldedNotes::MerkleProof;
-
-use crate::common::{deploy_contract_at, u256_from_u128};
-use crate::common::mock_proof_generator::{build_liquidity_add_outputs, build_liquidity_remove_outputs};
+use crate::common::mock_proof_generator::{
+    build_liquidity_add_outputs, build_liquidity_remove_outputs,
+};
+use crate::common::mocks::MockCore::{MockCoreExternalDispatcher, MockCoreExternalDispatcherTrait};
 use crate::common::mocks::MockGaragaVerifier::{
     MockGaragaVerifierExternalDispatcher, MockGaragaVerifierExternalDispatcherTrait,
 };
 use crate::common::mocks::MockShieldedNotes::{
     MockShieldedNotesAdminDispatcher, MockShieldedNotesAdminDispatcherTrait,
 };
+use crate::common::{deploy_contract_at, u256_from_u128};
 
 fn setup_liquidity_env_with_spacing(
     tick_spacing: i32,
@@ -84,17 +83,15 @@ fn setup_liquidity_env_with_spacing(
     (pool, adapter_address, garaga_address, notes_address)
 }
 
-fn setup_liquidity_env() -> (ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress) {
+fn setup_liquidity_env() -> (
+    ZylithPoolExternalDispatcher, ContractAddress, ContractAddress, ContractAddress,
+) {
     setup_liquidity_env_with_spacing(1)
 }
 
 fn dummy_proof() -> MerkleProof {
     MerkleProof {
-        root: 0,
-        commitment: 0,
-        leaf_index: 0,
-        path: array![].span(),
-        indices: array![].span(),
+        root: 0, commitment: 0, leaf_index: 0, path: array![].span(), indices: array![].span(),
     }
 }
 
@@ -115,12 +112,32 @@ fn test_add_liquidity_in_range() {
     let input_commitment0: felt252 = 7001;
     let nullifier0: felt252 = 7002;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 901,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        901,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -143,15 +160,16 @@ fn test_add_liquidity_in_range() {
     let insert_position = proofs_for_commitment(901);
     let output0 = proofs_for_commitment(0);
     let output1 = proofs_for_commitment(0);
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        proof_pos.span(),
-        insert_position.span(),
-        output0.span(),
-        output1.span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            proof_pos.span(),
+            insert_position.span(),
+            output0.span(),
+            output1.span(),
+        );
 
     let notes_admin = MockShieldedNotesAdminDispatcher { contract_address: notes_address };
     let (_, _, position_count) = notes_admin.get_commitment_counts();
@@ -210,15 +228,16 @@ fn test_add_liquidity_single_sided_token1() {
         indices: array![].span(),
     };
     let insert_position = proofs_for_commitment(911);
-    pool.add_liquidity_private(
-        array![].span(),
-        array![].span(),
-        array![proof_token1].span(),
-        array![].span(),
-        insert_position.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![].span(),
+            array![proof_token1].span(),
+            array![].span(),
+            insert_position.span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -229,27 +248,48 @@ fn test_add_liquidity_out_of_range() {
     let bad_tick = (MAX_TICK_MAGNITUDE + 1).try_into().unwrap();
     let upper_tick = bad_tick + 1;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, bad_tick, upper_tick,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        bad_tick,
+        upper_tick,
         sqrt_start,
         sqrt_start,
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 902,
-        u256_from_u128(0), u256_from_u128(0),
-        0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        902,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
     let proofs0: Array<MerkleProof> = array![];
     let proofs1: Array<MerkleProof> = array![];
     let proof_pos: Array<MerkleProof> = array![];
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        proof_pos.span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            proof_pos.span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -260,12 +300,32 @@ fn test_add_liquidity_tick_alignment() {
     let tick_lower = -3;
     let tick_upper = 4;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-3_i128).into()),
         tick_to_sqrt_ratio((4_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 901,
-        u256_from_u128(0), u256_from_u128(0),
-        0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        901,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -275,15 +335,16 @@ fn test_add_liquidity_tick_alignment() {
     };
     core.set_fee_inside(u256_from_u128(0), u256_from_u128(0));
 
-    pool.add_liquidity_private(
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -294,12 +355,32 @@ fn test_add_liquidity_sqrt_ratio_mismatch() {
     let tick_lower = -10;
     let tick_upper = 10;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-9_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 901,
-        u256_from_u128(0), u256_from_u128(0),
-        0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        901,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -309,15 +390,16 @@ fn test_add_liquidity_sqrt_ratio_mismatch() {
     };
     core.set_fee_inside(u256_from_u128(0), u256_from_u128(0));
 
-    pool.add_liquidity_private(
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -330,12 +412,32 @@ fn test_add_liquidity_requires_token0_inputs() {
     let input_commitment1: felt252 = 4321;
     let nullifier1: felt252 = 8765;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 901,
-        u256_from_u128(0), u256_from_u128(0),
-        1234, input_commitment1, 5678, nullifier1, 0, 0, 0, 1,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        901,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        1234,
+        input_commitment1,
+        5678,
+        nullifier1,
+        0,
+        0,
+        0,
+        1,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -352,15 +454,16 @@ fn test_add_liquidity_requires_token0_inputs() {
         path: array![].span(),
         indices: array![].span(),
     };
-    pool.add_liquidity_private(
-        array![].span(),
-        array![].span(),
-        array![proof1].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![].span(),
+            array![proof1].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -372,12 +475,32 @@ fn test_remove_liquidity() {
     let input_commitment0: felt252 = 7011;
     let nullifier0: felt252 = 7012;
     let add_outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 903,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        903,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(add_outputs.span());
@@ -398,33 +521,48 @@ fn test_remove_liquidity() {
     let proofs1: Array<MerkleProof> = array![];
     let proof_pos: Array<MerkleProof> = array![];
     let insert_position = proofs_for_commitment(903);
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        proof_pos.span(),
-        insert_position.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            proof_pos.span(),
+            insert_position.span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let remove_outputs = build_liquidity_remove_outputs(
-        111, 222, 333, 999, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        999,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        100, 50, 30, u256_from_u128(0), u256_from_u128(0), 903,
-        u256_from_u128(0), u256_from_u128(0), 0, 0,
+        100,
+        50,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        903,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        0,
     );
     verifier.set_outputs(remove_outputs.span());
 
-    let proof = MerkleProof { root: 333, commitment: 903, leaf_index: 0, path: array![].span(), indices: array![].span() };
-    pool.remove_liquidity_private(
-        array![].span(),
-        proof,
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    let proof = MerkleProof {
+        root: 333, commitment: 903, leaf_index: 0, path: array![].span(), indices: array![].span(),
+    };
+    pool
+        .remove_liquidity_private(
+            array![].span(), proof, array![].span(), array![].span(), array![].span(),
+        );
 }
 
 #[test]
@@ -438,12 +576,32 @@ fn test_position_fee_accumulation() {
     let input_commitment0: felt252 = 7021;
     let nullifier0: felt252 = 7022;
     let outputs = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-5_i128).into()),
         tick_to_sqrt_ratio((5_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 904,
-        fee_inside_0, fee_inside_1,
-        input_commitment0, 0, nullifier0, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        904,
+        fee_inside_0,
+        fee_inside_1,
+        input_commitment0,
+        0,
+        nullifier0,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     let verifier = MockGaragaVerifierExternalDispatcher { contract_address: garaga_address };
     verifier.set_outputs(outputs.span());
@@ -464,15 +622,16 @@ fn test_position_fee_accumulation() {
     let proofs1: Array<MerkleProof> = array![];
     let proof_pos: Array<MerkleProof> = array![];
     let insert_position = proofs_for_commitment(904);
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        proof_pos.span(),
-        insert_position.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            proof_pos.span(),
+            insert_position.span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -484,15 +643,16 @@ fn test_liquidity_reverts_on_invalid_proof() {
     let proofs0: Array<MerkleProof> = array![];
     let proofs1: Array<MerkleProof> = array![];
     let proof_pos: Array<MerkleProof> = array![];
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        proof_pos.span(),
-        array![].span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            proof_pos.span(),
+            array![].span(),
+            array![].span(),
+            array![].span(),
+        );
 }
 
 #[test]
@@ -508,62 +668,104 @@ fn test_multiple_positions_same_range() {
     let nullifier0_second: felt252 = 7034;
 
     let outputs_first = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        0, 100, 30, u256_from_u128(0), u256_from_u128(0), 0, 905,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0_first, 0, nullifier0_first, 0, 0, 0, 1, 0,
+        0,
+        100,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        905,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0_first,
+        0,
+        nullifier0_first,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs_first.span());
     let insert_first = proofs_for_commitment(905);
-    pool.add_liquidity_private(
-        array![].span(),
-        array![
-            MerkleProof {
-                root: 111,
-                commitment: input_commitment0_first,
-                leaf_index: 0,
-                path: array![].span(),
-                indices: array![].span(),
-            }
-        ]
-            .span(),
-        array![].span(),
-        array![].span(),
-        insert_first.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![
+                MerkleProof {
+                    root: 111,
+                    commitment: input_commitment0_first,
+                    leaf_index: 0,
+                    path: array![].span(),
+                    indices: array![].span(),
+                },
+            ]
+                .span(),
+            array![].span(),
+            array![].span(),
+            insert_first.span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let outputs_second = build_liquidity_add_outputs(
-        111, 222, 333, sqrt_start, 0, tick_lower, tick_upper,
+        111,
+        222,
+        333,
+        sqrt_start,
+        0,
+        tick_lower,
+        tick_upper,
         tick_to_sqrt_ratio((-10_i128).into()),
         tick_to_sqrt_ratio((10_i128).into()),
-        100, 200, 30, u256_from_u128(0), u256_from_u128(0), 0, 906,
-        u256_from_u128(0), u256_from_u128(0),
-        input_commitment0_second, 0, nullifier0_second, 0, 0, 0, 1, 0,
+        100,
+        200,
+        30,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        0,
+        906,
+        u256_from_u128(0),
+        u256_from_u128(0),
+        input_commitment0_second,
+        0,
+        nullifier0_second,
+        0,
+        0,
+        0,
+        1,
+        0,
     );
     verifier.set_outputs(outputs_second.span());
     let insert_second = proofs_for_commitment(906);
-    pool.add_liquidity_private(
-        array![].span(),
-        array![
-            MerkleProof {
-                root: 111,
-                commitment: input_commitment0_second,
-                leaf_index: 0,
-                path: array![].span(),
-                indices: array![].span(),
-            }
-        ]
-            .span(),
-        array![].span(),
-        array![].span(),
-        insert_second.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            array![
+                MerkleProof {
+                    root: 111,
+                    commitment: input_commitment0_second,
+                    leaf_index: 0,
+                    path: array![].span(),
+                    indices: array![].span(),
+                },
+            ]
+                .span(),
+            array![].span(),
+            array![].span(),
+            insert_second.span(),
+            array![].span(),
+            array![].span(),
+        );
 
     let notes_admin = MockShieldedNotesAdminDispatcher { contract_address: notes_address };
     let (_, _, position_count) = notes_admin.get_commitment_counts();
@@ -583,12 +785,36 @@ fn test_add_liquidity_fuzz_single_sided(seed: u128) {
     let input_commitment: felt252 = (seed % 100000 + 1).into();
     let nullifier: felt252 = (seed % 100000 + 2).into();
     let position_commitment: felt252 = (920_u128 + (seed % 10)).into();
-    let input_commitment_token0 = if use_token0 { input_commitment } else { 0 };
-    let input_commitment_token1 = if use_token0 { 0 } else { input_commitment };
-    let nullifier_token0 = if use_token0 { nullifier } else { 0 };
-    let nullifier_token1 = if use_token0 { 0 } else { nullifier };
-    let note_count0: u128 = if use_token0 { 1 } else { 0 };
-    let note_count1: u128 = if use_token0 { 0 } else { 1 };
+    let input_commitment_token0 = if use_token0 {
+        input_commitment
+    } else {
+        0
+    };
+    let input_commitment_token1 = if use_token0 {
+        0
+    } else {
+        input_commitment
+    };
+    let nullifier_token0 = if use_token0 {
+        nullifier
+    } else {
+        0
+    };
+    let nullifier_token1 = if use_token0 {
+        0
+    } else {
+        nullifier
+    };
+    let note_count0: u128 = if use_token0 {
+        1
+    } else {
+        0
+    };
+    let note_count1: u128 = if use_token0 {
+        0
+    } else {
+        1
+    };
     let tick_lower_i128: i128 = tick_lower.try_into().unwrap();
     let tick_upper_i128: i128 = tick_upper.try_into().unwrap();
     let outputs = build_liquidity_add_outputs(
@@ -649,13 +875,14 @@ fn test_add_liquidity_fuzz_single_sided(seed: u128) {
         proofs1.append(proof_token1);
     }
     let insert_position = proofs_for_commitment(position_commitment);
-    pool.add_liquidity_private(
-        array![].span(),
-        proofs0.span(),
-        proofs1.span(),
-        array![].span(),
-        insert_position.span(),
-        array![].span(),
-        array![].span(),
-    );
+    pool
+        .add_liquidity_private(
+            array![].span(),
+            proofs0.span(),
+            proofs1.span(),
+            array![].span(),
+            insert_position.span(),
+            array![].span(),
+            array![].span(),
+        );
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,7 +18,8 @@ use num_bigint::BigUint;
 use num_traits::Num;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::timeout;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -34,10 +36,9 @@ use starknet::providers::Provider;
 
 use zylith_client::{
     compute_commitment, generate_note_with_token_id, generate_nullifier_hash, parse_felt,
-    quote_liquidity_amounts, ClientError,
-    LiquidityAddProveRequest, LiquidityClaimProveRequest, LiquidityProveResult,
-    LiquidityRemoveProveRequest, MerklePath, Note, PoolConfig, PositionNote, SignedAmount,
-    SwapProveRequest, SwapStepQuote, ZylithClient, ZylithConfig, MAX_INPUT_NOTES,
+    quote_liquidity_amounts, ClientError, LiquidityAddProveRequest, LiquidityClaimProveRequest,
+    LiquidityProveResult, LiquidityRemoveProveRequest, MerklePath, Note, PoolConfig, PositionNote,
+    SignedAmount, SwapProveRequest, SwapStepQuote, ZylithClient, ZylithConfig, MAX_INPUT_NOTES,
 };
 use zylith_prover::{
     prove_deposit as prove_deposit_proof, prove_withdraw as prove_withdraw_proof,
@@ -156,6 +157,7 @@ struct SwapProofResponse {
     change_note: Option<NoteOutput>,
     amount_out: String,
     amount_in_consumed: String,
+    selected_swap_steps: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,7 +302,7 @@ enum ApiError {
     BadRequest(String),
     Upstream(String),
     Prover(String),
-    QueueFull,
+    QueueTimeout,
     RateLimited,
     Unauthorized,
     Internal(String),
@@ -341,12 +343,10 @@ impl RateLimiter {
         if buckets.len() >= RATE_LIMIT_MAX_BUCKETS {
             prune_rate_limit_buckets(&mut buckets, now);
         }
-        let bucket = buckets
-            .entry(ip)
-            .or_insert_with(|| RateBucket {
-                tokens: self.burst,
-                last_refill: now,
-            });
+        let bucket = buckets.entry(ip).or_insert_with(|| RateBucket {
+            tokens: self.burst,
+            last_refill: now,
+        });
         let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
         bucket.tokens = (bucket.tokens + elapsed * self.rate_per_sec).min(self.burst);
         bucket.last_refill = now;
@@ -395,10 +395,14 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg),
             ApiError::Prover(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ApiError::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "proof queue full".to_string()),
-            ApiError::RateLimited => {
-                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string())
-            }
+            ApiError::QueueTimeout => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "proof queue timeout".to_string(),
+            ),
+            ApiError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded".to_string(),
+            ),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
@@ -551,6 +555,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     let config = finalize_config(raw, &config_path, rpc_url, chain_id)?;
     validate_artifacts(&config.artifacts_dir)?;
+    log_swap_variant_status(&config.artifacts_dir);
+    maybe_warm_artifacts(&config.artifacts_dir)?;
 
     let account = ReadOnlyAccount::new(provider, config.chain_id, ExecutionEncoding::New);
     let state = AppState {
@@ -586,7 +592,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     info!("zylith backend listening on {}", config.bind_addr);
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -614,8 +624,8 @@ fn finalize_config(
         .parse::<SocketAddr>()
         .map_err(|e| format!("invalid bind_addr: {e}"))?;
     let pool_address = parse_felt(&raw.pool_address).map_err(|e| format!("pool_address: {e}"))?;
-    let shielded_notes_address =
-        parse_felt(&raw.shielded_notes_address).map_err(|e| format!("shielded_notes_address: {e}"))?;
+    let shielded_notes_address = parse_felt(&raw.shielded_notes_address)
+        .map_err(|e| format!("shielded_notes_address: {e}"))?;
     let token0 = parse_felt(&raw.token0).map_err(|e| format!("token0: {e}"))?;
     let token1 = parse_felt(&raw.token1).map_err(|e| format!("token1: {e}"))?;
 
@@ -649,16 +659,14 @@ fn finalize_config(
     if raw.rate_limit_burst == 0 {
         return Err("rate_limit_burst must be >= 1".into());
     }
-    let api_key = raw
-        .api_key
-        .and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
+    let api_key = raw.api_key.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     let trust_proxy = raw.trust_proxy.unwrap_or(false);
     if api_key.is_none() && !is_dev_mode() {
         return Err("api_key must be set unless ENV=dev or ENV=test".into());
@@ -701,30 +709,162 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
 }
 
 fn validate_artifacts(root: &Path) -> Result<(), Box<dyn Error>> {
-    let required = [
-        ("private_deposit", "private_deposit.wasm"),
-        ("private_deposit", "private_deposit_final.zkey"),
-        ("private_deposit", "verification_key.json"),
-        ("private_swap", "private_swap.wasm"),
-        ("private_swap", "private_swap_final.zkey"),
-        ("private_swap", "verification_key.json"),
-        ("private_swap_exact_out", "private_swap_exact_out.wasm"),
-        ("private_swap_exact_out", "private_swap_exact_out_final.zkey"),
-        ("private_swap_exact_out", "verification_key.json"),
-        ("private_liquidity", "private_liquidity.wasm"),
-        ("private_liquidity", "private_liquidity_final.zkey"),
-        ("private_liquidity", "verification_key.json"),
-        ("private_withdraw", "private_withdraw.wasm"),
-        ("private_withdraw", "private_withdraw_final.zkey"),
-        ("private_withdraw", "verification_key.json"),
+    let required_circuits = ["private_deposit", "private_liquidity", "private_withdraw"];
+    for circuit in required_circuits {
+        validate_circuit_artifacts(root, circuit)?;
+    }
+    for circuit in [
+        "private_swap_zero_for_one_4",
+        "private_swap_zero_for_one_8",
+        "private_swap_one_for_zero_4",
+        "private_swap_one_for_zero_8",
+        "private_swap_exact_out_zero_for_one_4",
+        "private_swap_exact_out_zero_for_one_8",
+        "private_swap_exact_out_one_for_zero_4",
+        "private_swap_exact_out_one_for_zero_8",
+    ] {
+        validate_circuit_artifacts(root, circuit)?;
+    }
+    Ok(())
+}
+
+fn validate_circuit_artifacts(root: &Path, circuit: &str) -> Result<(), Box<dyn Error>> {
+    let dir = root.join(circuit);
+    let base = base_circuit_name(circuit);
+    for path in [
+        dir.join(format!("{base}.wasm")),
+        dir.join(format!("{base}_final.zkey")),
+        dir.join("verification_key.json"),
+        dir.join(base),
+        dir.join(format!("{base}.dat")),
+    ] {
+        validate_artifact_file(&path)?;
+    }
+    Ok(())
+}
+
+fn validate_artifact_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    if !path.exists() {
+        return Err(format!("missing artifact {}", path.display()).into());
+    }
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(format!("artifact {} is not a file", path.display()).into());
+    }
+    if metadata.len() < 1024 {
+        return Err(format!("artifact {} appears truncated", path.display()).into());
+    }
+    Ok(())
+}
+
+fn swap_variant_available(root: &Path, circuit: &str) -> bool {
+    let dir = root.join(circuit);
+    let base = base_circuit_name(circuit);
+    artifact_file_present(&dir.join(format!("{base}.wasm")))
+        && artifact_file_present(&dir.join(format!("{base}_final.zkey")))
+        && artifact_file_present(&dir.join("verification_key.json"))
+        && artifact_file_present(&dir.join(base))
+        && artifact_file_present(&dir.join(format!("{base}.dat")))
+}
+
+fn artifact_file_present(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.len() >= 1024)
+        .unwrap_or(false)
+}
+
+fn base_circuit_name(circuit: &str) -> &str {
+    for suffix in ["_4", "_8"] {
+        if let Some(base) = circuit.strip_suffix(suffix) {
+            return base;
+        }
+    }
+    circuit
+}
+
+fn log_swap_variant_status(root: &Path) {
+    info!(
+        swap_zero_for_one_4 = swap_variant_available(root, "private_swap_zero_for_one_4"),
+        swap_zero_for_one_8 = swap_variant_available(root, "private_swap_zero_for_one_8"),
+        swap_one_for_zero_4 = swap_variant_available(root, "private_swap_one_for_zero_4"),
+        swap_one_for_zero_8 = swap_variant_available(root, "private_swap_one_for_zero_8"),
+        swap_exact_out_zero_for_one_4 =
+            swap_variant_available(root, "private_swap_exact_out_zero_for_one_4"),
+        swap_exact_out_zero_for_one_8 =
+            swap_variant_available(root, "private_swap_exact_out_zero_for_one_8"),
+        swap_exact_out_one_for_zero_4 =
+            swap_variant_available(root, "private_swap_exact_out_one_for_zero_4"),
+        swap_exact_out_one_for_zero_8 =
+            swap_variant_available(root, "private_swap_exact_out_one_for_zero_8"),
+        "swap proof variants detected"
+    );
+}
+
+fn maybe_warm_artifacts(root: &Path) -> Result<(), Box<dyn Error>> {
+    if !env_flag("ZYLITH_WARM_PROVER_ARTIFACTS") {
+        return Ok(());
+    }
+    let targets = [
+        "private_swap_zero_for_one_4",
+        "private_swap_zero_for_one_8",
+        "private_swap_one_for_zero_4",
+        "private_swap_one_for_zero_8",
+        "private_swap_exact_out_zero_for_one_4",
+        "private_swap_exact_out_zero_for_one_8",
+        "private_swap_exact_out_one_for_zero_4",
+        "private_swap_exact_out_one_for_zero_8",
     ];
-    for (dir, file) in required {
-        let path = root.join(dir).join(file);
-        if !path.exists() {
-            return Err(format!("missing artifact {}", path.display()).into());
+    let mut warmed = 0usize;
+    for circuit in targets {
+        let dir = root.join(circuit);
+        if !dir.exists() {
+            continue;
+        }
+        let base = base_circuit_name(circuit);
+        for file in [
+            dir.join(format!("{base}.wasm")),
+            dir.join(format!("{base}_final.zkey")),
+        ] {
+            if !file.exists() {
+                continue;
+            }
+            warm_file(&file)?;
+            warmed += 1;
+        }
+    }
+    info!(warmed_files = warmed, "prover artifacts warmed");
+    Ok(())
+}
+
+fn warm_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut file = fs::File::open(path)?;
+    let mut buf = vec![0u8; 8 * 1024 * 1024];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
         }
     }
     Ok(())
+}
+
+fn env_flag(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+fn swap_artifact_dir_name(exact_out: bool, zero_for_one: bool) -> &'static str {
+    match (exact_out, zero_for_one) {
+        (false, true) => "private_swap_zero_for_one",
+        (false, false) => "private_swap_one_for_zero",
+        (true, true) => "private_swap_exact_out_zero_for_one",
+        (true, false) => "private_swap_exact_out_one_for_zero",
+    }
 }
 
 fn build_cors(origins: &[String]) -> Result<CorsLayer, Box<dyn Error>> {
@@ -795,6 +935,15 @@ fn client_ip(req: &Request<Body>, addr: SocketAddr, trust_proxy: bool) -> IpAddr
     addr.ip()
 }
 
+async fn acquire_proof_permit(state: &AppState) -> Result<OwnedSemaphorePermit, ApiError> {
+    let wait = Duration::from_secs(30);
+    let permit = timeout(wait, state.limiter.clone().acquire_owned())
+        .await
+        .map_err(|_| ApiError::QueueTimeout)?
+        .map_err(|_| ApiError::Internal("proof queue closed".to_string()))?;
+    Ok(permit)
+}
+
 async fn require_api_key(
     State(state): State<AppState>,
     req: Request<Body>,
@@ -815,9 +964,7 @@ async fn require_api_key(
     next.run(req).await
 }
 
-async fn pool_config(
-    State(state): State<AppState>,
-) -> Result<Json<PoolConfigResponse>, ApiError> {
+async fn pool_config(State(state): State<AppState>) -> Result<Json<PoolConfigResponse>, ApiError> {
     let client = build_client(&state);
     let config = client.get_pool_config().await?;
     Ok(Json(pool_config_response(config, &state.config)))
@@ -829,7 +976,9 @@ async fn quote_swap(
 ) -> Result<Json<SwapQuoteResponse>, ApiError> {
     let amount = parse_u128(&request.amount)?;
     if amount == 0 {
-        return Err(ApiError::BadRequest("amount must be greater than zero".to_string()));
+        return Err(ApiError::BadRequest(
+            "amount must be greater than zero".to_string(),
+        ));
     }
     let client = build_client(&state);
     let pool_config = client.get_pool_config().await?;
@@ -924,7 +1073,7 @@ async fn prove_swap(
     State(state): State<AppState>,
     Json(request): Json<SwapProofRequest>,
 ) -> Result<Json<SwapProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     if request.notes.is_empty() {
         return Err(ApiError::BadRequest("notes cannot be empty".to_string()));
     }
@@ -937,7 +1086,7 @@ async fn prove_swap(
         .transpose()?;
     if request.exact_out {
         match amount_out {
-            Some(value) if value == 0 => {
+            Some(0) => {
                 return Err(ApiError::BadRequest(
                     "amount_out must be greater than zero".to_string(),
                 ));
@@ -959,11 +1108,10 @@ async fn prove_swap(
         .map(|value| parse_u256(&value))
         .transpose()?;
 
-    let circuit_dir = if request.exact_out {
-        state.config.artifacts_dir.join("private_swap_exact_out")
-    } else {
-        state.config.artifacts_dir.join("private_swap")
-    };
+    let circuit_dir = state.config.artifacts_dir.join(swap_artifact_dir_name(
+        request.exact_out,
+        request.zero_for_one,
+    ));
     let client = build_client(&state);
     let result = client
         .prove_swap(SwapProveRequest {
@@ -994,6 +1142,7 @@ async fn prove_swap(
         change_note: result.change_note.map(note_output),
         amount_out: result.amount_out.to_string(),
         amount_in_consumed: result.amount_in_consumed.to_string(),
+        selected_swap_steps: result.selected_swap_steps,
     }))
 }
 
@@ -1001,7 +1150,7 @@ async fn prove_deposit(
     State(state): State<AppState>,
     Json(request): Json<DepositProofRequest>,
 ) -> Result<Json<DepositProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     if request.token_id > 1 {
         return Err(ApiError::BadRequest("token_id must be 0 or 1".to_string()));
     }
@@ -1018,8 +1167,8 @@ async fn prove_deposit(
                 "note amount must be greater than zero".to_string(),
             ));
         }
-        let token = parse_felt(&request.note.token)
-            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        let token =
+            parse_felt(&request.note.token).map_err(|e| ApiError::BadRequest(e.to_string()))?;
         if token != expected_token {
             return Err(ApiError::BadRequest("note token mismatch".to_string()));
         }
@@ -1079,17 +1228,23 @@ async fn prove_liquidity_add(
     State(state): State<AppState>,
     Json(request): Json<LiquidityAddProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     let token0_notes =
         parse_notes_for_token(request.token0_notes, &state.config, state.config.token0)?;
     let token1_notes =
         parse_notes_for_token(request.token1_notes, &state.config, state.config.token1)?;
     let position_note = parse_position_note_option(request.position_note)?;
     let output_position_note = parse_position_note_option(request.output_position_note)?;
-    let output_note_token0 =
-        parse_note_option_for_token(request.output_note_token0, &state.config, state.config.token0)?;
-    let output_note_token1 =
-        parse_note_option_for_token(request.output_note_token1, &state.config, state.config.token1)?;
+    let output_note_token0 = parse_note_option_for_token(
+        request.output_note_token0,
+        &state.config,
+        state.config.token0,
+    )?;
+    let output_note_token1 = parse_note_option_for_token(
+        request.output_note_token1,
+        &state.config,
+        state.config.token1,
+    )?;
     let liquidity_delta = parse_u128(&request.liquidity_delta)?;
     if liquidity_delta == 0 {
         return Err(ApiError::BadRequest(
@@ -1148,15 +1303,23 @@ async fn prove_liquidity_remove(
     State(state): State<AppState>,
     Json(request): Json<LiquidityRemoveProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     let position_note = parse_position_note(request.position_note)?;
     let output_position_note = parse_position_note_option(request.output_position_note)?;
-    let output_note_token0 =
-        parse_note_option_for_token(request.output_note_token0, &state.config, state.config.token0)?;
-    let output_note_token1 =
-        parse_note_option_for_token(request.output_note_token1, &state.config, state.config.token1)?;
+    let output_note_token0 = parse_note_option_for_token(
+        request.output_note_token0,
+        &state.config,
+        state.config.token0,
+    )?;
+    let output_note_token1 = parse_note_option_for_token(
+        request.output_note_token1,
+        &state.config,
+        state.config.token1,
+    )?;
     if let Some(note) = &output_position_note {
-        if note.tick_lower != position_note.tick_lower || note.tick_upper != position_note.tick_upper {
+        if note.tick_lower != position_note.tick_lower
+            || note.tick_upper != position_note.tick_upper
+        {
             return Err(ApiError::BadRequest(
                 "output_position_note tick bounds must match position_note".to_string(),
             ));
@@ -1187,15 +1350,23 @@ async fn prove_liquidity_claim(
     State(state): State<AppState>,
     Json(request): Json<LiquidityClaimProofRequest>,
 ) -> Result<Json<LiquidityProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     let position_note = parse_position_note(request.position_note)?;
     let output_position_note = parse_position_note_option(request.output_position_note)?;
-    let output_note_token0 =
-        parse_note_option_for_token(request.output_note_token0, &state.config, state.config.token0)?;
-    let output_note_token1 =
-        parse_note_option_for_token(request.output_note_token1, &state.config, state.config.token1)?;
+    let output_note_token0 = parse_note_option_for_token(
+        request.output_note_token0,
+        &state.config,
+        state.config.token0,
+    )?;
+    let output_note_token1 = parse_note_option_for_token(
+        request.output_note_token1,
+        &state.config,
+        state.config.token1,
+    )?;
     if let Some(note) = &output_position_note {
-        if note.tick_lower != position_note.tick_lower || note.tick_upper != position_note.tick_upper {
+        if note.tick_lower != position_note.tick_lower
+            || note.tick_upper != position_note.tick_upper
+        {
             return Err(ApiError::BadRequest(
                 "output_position_note tick bounds must match position_note".to_string(),
             ));
@@ -1219,7 +1390,7 @@ async fn prove_withdraw(
     State(state): State<AppState>,
     Json(request): Json<WithdrawProofRequest>,
 ) -> Result<Json<WithdrawProofResponse>, ApiError> {
-    let _permit = state.limiter.try_acquire().map_err(|_| ApiError::QueueFull)?;
+    let _permit = acquire_proof_permit(&state).await?;
     if request.token_id > 1 {
         return Err(ApiError::BadRequest("token_id must be 0 or 1".to_string()));
     }
@@ -1323,12 +1494,14 @@ async fn validate_onchain_config(state: &AppState) -> Result<(), Box<dyn Error>>
     }
 
     let provider = state.account.provider();
-    let notes_token0 = call_contract_felt(provider, state.config.shielded_notes_address, "get_token0")
-        .await
-        .map_err(|e| format!("failed to read ShieldedNotes token0: {e}"))?;
-    let notes_token1 = call_contract_felt(provider, state.config.shielded_notes_address, "get_token1")
-        .await
-        .map_err(|e| format!("failed to read ShieldedNotes token1: {e}"))?;
+    let notes_token0 =
+        call_contract_felt(provider, state.config.shielded_notes_address, "get_token0")
+            .await
+            .map_err(|e| format!("failed to read ShieldedNotes token0: {e}"))?;
+    let notes_token1 =
+        call_contract_felt(provider, state.config.shielded_notes_address, "get_token1")
+            .await
+            .map_err(|e| format!("failed to read ShieldedNotes token1: {e}"))?;
     if notes_token0 != state.config.token0 || notes_token1 != state.config.token1 {
         return Err(format!(
             "shielded notes token mismatch: expected ({}, {}) got ({}, {})",
@@ -1399,7 +1572,10 @@ fn parse_notes_for_token(
     Ok(parsed)
 }
 
-fn parse_note_option(input: Option<NoteInput>, config: &AppConfig) -> Result<Option<Note>, ApiError> {
+fn parse_note_option(
+    input: Option<NoteInput>,
+    config: &AppConfig,
+) -> Result<Option<Note>, ApiError> {
     match input {
         Some(note) => Ok(Some(parse_note(note, config)?)),
         None => Ok(None),
@@ -1577,8 +1753,7 @@ fn summarize_quote_amounts(steps: &[SwapStepQuote]) -> Result<(u128, u128), ApiE
 
 fn parse_u128(value: &str) -> Result<u128, ApiError> {
     if let Some(hex) = value.strip_prefix("0x") {
-        u128::from_str_radix(hex, 16)
-            .map_err(|_| ApiError::BadRequest("invalid u128".to_string()))
+        u128::from_str_radix(hex, 16).map_err(|_| ApiError::BadRequest("invalid u128".to_string()))
     } else {
         value
             .parse::<u128>()
@@ -1592,8 +1767,8 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
     } else {
         (10, value)
     };
-    let parsed =
-        BigUint::from_str_radix(digits, radix).map_err(|_| ApiError::BadRequest("invalid u256".to_string()))?;
+    let parsed = BigUint::from_str_radix(digits, radix)
+        .map_err(|_| ApiError::BadRequest("invalid u256".to_string()))?;
     let bytes = parsed.to_bytes_be();
     if bytes.len() > 32 {
         return Err(ApiError::BadRequest("u256 overflow".to_string()));
@@ -1608,7 +1783,9 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
 fn parse_bytes32(value: &str) -> Result<[u8; 32], ApiError> {
     let hex = value.strip_prefix("0x").unwrap_or(value);
     if hex.len() != 64 {
-        return Err(ApiError::BadRequest("expected 32-byte hex string".to_string()));
+        return Err(ApiError::BadRequest(
+            "expected 32-byte hex string".to_string(),
+        ));
     }
     let bytes = hex::decode(hex).map_err(|_| ApiError::BadRequest("invalid hex".to_string()))?;
     let mut out = [0u8; 32];

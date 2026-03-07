@@ -1,19 +1,18 @@
+use core::array::SpanTrait;
 #[feature("deprecated_legacy_map")]
 use core::byte_array::ByteArray;
 use core::poseidon::hades_permutation;
-use core::array::SpanTrait;
 use core::result::ResultTrait;
 use core::traits::TryInto;
+use snforge_std::{ContractClassTrait, DeclareResultTrait, declare};
 use starknet::{ContractAddress, SyscallResultTrait};
-use snforge_std::{declare, ContractClassTrait, DeclareResultTrait};
-
 use zylith::constants::generated as generated_constants;
 use zylith::privacy::ShieldedNotes::MerkleProof;
 
 const MAX_U128: u128 = 0xffffffffffffffffffffffffffffffff;
+pub mod mock_proof_generator;
 
 pub mod mocks;
-pub mod mock_proof_generator;
 
 pub fn declare_contract(name: ByteArray) -> @snforge_std::ContractClass {
     let result = declare(name).unwrap();
@@ -145,10 +144,7 @@ pub fn merkle_root_for_two_leaves(leaf0: felt252, leaf1: felt252) -> felt252 {
 }
 
 pub fn merkle_proof_for_two_leaves(
-    root: felt252,
-    commitment: felt252,
-    leaf_index: u64,
-    sibling: felt252,
+    root: felt252, commitment: felt252, leaf_index: u64, sibling: felt252,
 ) -> MerkleProof {
     let height: usize = generated_constants::TREE_HEIGHT.into();
     let mut path: Array<felt252> = array![];
@@ -172,21 +168,19 @@ fn poseidon_hash_pair(left: felt252, right: felt252) -> felt252 {
 }
 
 pub fn merkle_root_from_path(
-    leaf: felt252,
-    mut index: u64,
-    path: Span<felt252>,
-    indices: Span<bool>,
+    leaf: felt252, mut index: u64, path: Span<felt252>, indices: Span<bool>,
 ) -> felt252 {
     let mut hash_ = leaf;
     let mut i: usize = 0;
     while i < path.len() {
         let sibling = *path.at(i);
         let is_right = *indices.at(i);
-        hash_ = if is_right {
-            poseidon_hash_pair(sibling, hash_)
-        } else {
-            poseidon_hash_pair(hash_, sibling)
-        };
+        hash_ =
+            if is_right {
+                poseidon_hash_pair(sibling, hash_)
+            } else {
+                poseidon_hash_pair(hash_, sibling)
+            };
         index /= 2;
         i += 1;
     }

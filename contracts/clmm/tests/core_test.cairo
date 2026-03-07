@@ -2,12 +2,10 @@ use core::integer::u256;
 use core::num::traits::Zero;
 use core::option::OptionTrait;
 use core::traits::TryInto;
-use starknet::ContractAddress;
 use snforge_std::{start_cheat_caller_address, stop_cheat_caller_address};
+use starknet::ContractAddress;
 use crate::interfaces::core::{ICoreDispatcher, ICoreDispatcherTrait};
-use crate::math::ticks::{
-    constants as tick_constants, max_tick, min_tick, tick_to_sqrt_ratio,
-};
+use crate::math::ticks::{constants as tick_constants, max_tick, min_tick, tick_to_sqrt_ratio};
 use crate::tests::helper::{
     Deployer, DeployerTrait, FEE_ONE_PERCENT, default_owner, i129_to_signed_u256,
 };
@@ -57,22 +55,19 @@ fn setup_shielded_pool(fee: u128, tick_spacing: u128, initial_tick: i129) -> Shi
     stop_cheat_caller_address(core.contract_address);
 
     start_cheat_caller_address(core.contract_address, adapter);
-    core.set_pool_state(
-        tick_to_sqrt_ratio(initial_tick),
-        initial_tick,
-        tick_spacing,
-        0,
-        u256_from_u128(0),
-        u256_from_u128(0),
-    );
+    core
+        .set_pool_state(
+            tick_to_sqrt_ratio(initial_tick),
+            initial_tick,
+            tick_spacing,
+            0,
+            u256_from_u128(0),
+            u256_from_u128(0),
+        );
     stop_cheat_caller_address(core.contract_address);
 
     ShieldedSetup {
-        core,
-        pool_key,
-        token0: token0.contract_address,
-        token1: token1.contract_address,
-        adapter,
+        core, pool_key, token0: token0.contract_address, token1: token1.contract_address, adapter,
     }
 }
 
@@ -102,9 +97,7 @@ mod owner_tests {
 
 mod initialize_pool_tests {
     use crate::math::ticks::constants::MAX_TICK_SPACING;
-    use super::{
-        Deployer, DeployerTrait, ICoreDispatcherTrait, PoolKey, Zero, i129,
-    };
+    use super::{Deployer, DeployerTrait, ICoreDispatcherTrait, PoolKey, Zero, i129};
 
     #[test]
     #[should_panic(expected: ('DIRECT_CALL_DISABLED',))]
@@ -246,36 +239,40 @@ mod initialize_pool_tests {
 
 mod initialized_ticks {
     use super::{
-        i129_from_i32, i129_to_signed_u256, setup_shielded_pool, u256_from_u128, FEE_ONE_PERCENT,
-        ICoreDispatcherTrait, ShieldedSetup, TICKS_IN_ONE_PERCENT, Zero, i129, max_tick, min_tick,
-        start_cheat_caller_address, stop_cheat_caller_address, tick_constants,
+        FEE_ONE_PERCENT, ICoreDispatcherTrait, ShieldedSetup, TICKS_IN_ONE_PERCENT, Zero, i129,
+        i129_from_i32, i129_to_signed_u256, max_tick, min_tick, setup_shielded_pool,
+        start_cheat_caller_address, stop_cheat_caller_address, tick_constants, u256_from_u128,
     };
 
     fn apply_liquidity(setup: ShieldedSetup, lower: i32, upper: i32, delta: i129) {
-        setup.core.apply_liquidity_state(
-            lower,
-            upper,
-            i129_to_signed_u256(delta),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            0,
-            0,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                lower,
+                upper,
+                i129_to_signed_u256(delta),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                0,
+                0,
+                setup.token0,
+                setup.token1,
+            );
     }
 
     #[test]
     #[should_panic(expected: ('PREV_FROM_MIN',))]
     fn test_prev_initialized_tick_min_tick_minus_one() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, TICKS_IN_ONE_PERCENT, Zero::zero());
-        setup.core.prev_initialized_tick(
-            pool_key: setup.pool_key,
-            from: min_tick() - i129 { mag: 1, sign: false },
-            skip_ahead: 0,
-        );
+        setup
+            .core
+            .prev_initialized_tick(
+                pool_key: setup.pool_key,
+                from: min_tick() - i129 { mag: 1, sign: false },
+                skip_ahead: 0,
+            );
     }
 
     #[test]
@@ -315,8 +312,9 @@ mod initialized_ticks {
 
     #[test]
     fn test_next_initialized_tick_exceeds_max_tick_spacing() {
-        let setup =
-            setup_shielded_pool(FEE_ONE_PERCENT, tick_constants::MAX_TICK_SPACING, Zero::zero());
+        let setup = setup_shielded_pool(
+            FEE_ONE_PERCENT, tick_constants::MAX_TICK_SPACING, Zero::zero(),
+        );
         assert(
             setup
                 .core
@@ -329,8 +327,9 @@ mod initialized_ticks {
 
     #[test]
     fn test_prev_initialized_tick_exceeds_min_tick_spacing() {
-        let setup =
-            setup_shielded_pool(FEE_ONE_PERCENT, tick_constants::MAX_TICK_SPACING, Zero::zero());
+        let setup = setup_shielded_pool(
+            FEE_ONE_PERCENT, tick_constants::MAX_TICK_SPACING, Zero::zero(),
+        );
         assert(
             setup
                 .core
@@ -415,33 +414,16 @@ mod initialized_ticks {
         let spacing: i32 = TICKS_IN_ONE_PERCENT.try_into().unwrap();
 
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        apply_liquidity(
-            setup,
-            -(spacing * 12),
-            spacing * 9,
-            i129 { mag: 1, sign: false },
-        );
-        apply_liquidity(
-            setup,
-            -(spacing * 128),
-            spacing * 128,
-            i129 { mag: 1, sign: false },
-        );
-        apply_liquidity(
-            setup,
-            -(spacing * 154),
-            spacing * 200,
-            i129 { mag: 1, sign: false },
-        );
+        apply_liquidity(setup, -(spacing * 12), spacing * 9, i129 { mag: 1, sign: false });
+        apply_liquidity(setup, -(spacing * 128), spacing * 128, i129 { mag: 1, sign: false });
+        apply_liquidity(setup, -(spacing * 154), spacing * 200, i129 { mag: 1, sign: false });
         stop_cheat_caller_address(setup.core.contract_address);
 
         assert(
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 500)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 500)), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 154)), true),
             'next from -500, skip 5',
         );
@@ -449,9 +431,7 @@ mod initialized_ticks {
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 154)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 154)), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 128)), true),
             'next from -154, skip 5',
         );
@@ -459,9 +439,7 @@ mod initialized_ticks {
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 128)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 128)), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 12)), true),
             'next from -128, skip 5',
         );
@@ -469,9 +447,7 @@ mod initialized_ticks {
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 12)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 12)), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 9), true),
             'next from -12, skip 5',
         );
@@ -479,9 +455,7 @@ mod initialized_ticks {
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 9),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 9), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 128), true),
             'next from 9, skip 5',
         );
@@ -489,9 +463,7 @@ mod initialized_ticks {
             setup
                 .core
                 .next_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 128),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 128), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 200), true),
             'next from 128, skip 5',
         );
@@ -500,9 +472,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 500),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 500), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 200), true),
             'prev from 500, skip 5',
         );
@@ -510,9 +480,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 199),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 199), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 128), true),
             'prev from 199, skip 5',
         );
@@ -520,9 +488,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 127),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 127), skip_ahead: 5,
                 ) == (i129_from_i32(spacing * 9), true),
             'prev from 127, skip 5',
         );
@@ -530,9 +496,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(spacing * 8),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(spacing * 8), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 12)), true),
             'prev from 8, skip 5',
         );
@@ -540,9 +504,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 13)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 13)), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 128)), true),
             'prev from -13, skip 5',
         );
@@ -550,9 +512,7 @@ mod initialized_ticks {
             setup
                 .core
                 .prev_initialized_tick(
-                    pool_key: setup.pool_key,
-                    from: i129_from_i32(-(spacing * 129)),
-                    skip_ahead: 5,
+                    pool_key: setup.pool_key, from: i129_from_i32(-(spacing * 129)), skip_ahead: 5,
                 ) == (i129_from_i32(-(spacing * 154)), true),
             'prev from -129, skip 5',
         );
@@ -561,14 +521,13 @@ mod initialized_ticks {
 
 
 mod shielded_mode {
-    use super::{
-        i129_to_signed_u256, setup_shielded_pool, u256_from_u128, Deployer, DeployerTrait,
-        FEE_ONE_PERCENT, ICoreDispatcherTrait, Zero, default_owner, i129, start_cheat_caller_address,
-        stop_cheat_caller_address, tick_to_sqrt_ratio,
-    };
-    use core::array::ArrayTrait;
     use core::traits::TryInto;
     use starknet::ContractAddress;
+    use super::{
+        Deployer, DeployerTrait, FEE_ONE_PERCENT, ICoreDispatcherTrait, Zero, default_owner, i129,
+        i129_to_signed_u256, setup_shielded_pool, start_cheat_caller_address,
+        stop_cheat_caller_address, tick_to_sqrt_ratio, u256_from_u128,
+    };
 
     #[test]
     #[should_panic(expected: ('NOT_AUTHORIZED',))]
@@ -583,14 +542,15 @@ mod shielded_mode {
         stop_cheat_caller_address(core.contract_address);
 
         start_cheat_caller_address(core.contract_address, attacker);
-        core.set_pool_state(
-            tick_to_sqrt_ratio(Zero::zero()),
-            Zero::zero(),
-            1,
-            0,
-            u256_from_u128(0),
-            u256_from_u128(0),
-        );
+        core
+            .set_pool_state(
+                tick_to_sqrt_ratio(Zero::zero()),
+                Zero::zero(),
+                1,
+                0,
+                u256_from_u128(0),
+                u256_from_u128(0),
+            );
     }
 
     #[test]
@@ -598,19 +558,21 @@ mod shielded_mode {
     fn test_apply_liquidity_state_rejects_zero_delta() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, 60, Zero::zero());
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        setup.core.apply_liquidity_state(
-            -60,
-            60,
-            u256_from_u128(0),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            0,
-            0,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                -60,
+                60,
+                u256_from_u128(0),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                0,
+                0,
+                setup.token0,
+                setup.token1,
+            );
     }
 
     #[test]
@@ -618,19 +580,21 @@ mod shielded_mode {
     fn test_apply_liquidity_state_rejects_invalid_ticks() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, 60, Zero::zero());
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        setup.core.apply_liquidity_state(
-            0,
-            0,
-            i129_to_signed_u256(Zero::zero()),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            0,
-            0,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                0,
+                0,
+                i129_to_signed_u256(Zero::zero()),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                0,
+                0,
+                setup.token0,
+                setup.token1,
+            );
     }
 
     #[test]
@@ -638,19 +602,21 @@ mod shielded_mode {
     fn test_apply_liquidity_state_rejects_tick_lower_alignment() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, 60, Zero::zero());
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        setup.core.apply_liquidity_state(
-            1,
-            60,
-            i129_to_signed_u256(i129 { mag: 1, sign: false }),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            0,
-            0,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                1,
+                60,
+                i129_to_signed_u256(i129 { mag: 1, sign: false }),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                0,
+                0,
+                setup.token0,
+                setup.token1,
+            );
     }
 
     #[test]
@@ -658,48 +624,46 @@ mod shielded_mode {
     fn test_apply_liquidity_state_rejects_tick_upper_alignment() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, 60, Zero::zero());
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        setup.core.apply_liquidity_state(
-            0,
-            1,
-            i129_to_signed_u256(i129 { mag: 1, sign: false }),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            0,
-            0,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                0,
+                1,
+                i129_to_signed_u256(i129 { mag: 1, sign: false }),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                0,
+                0,
+                setup.token0,
+                setup.token1,
+            );
     }
 
     #[test]
     fn test_apply_liquidity_state_updates_protocol_fees() {
         let setup = setup_shielded_pool(FEE_ONE_PERCENT, 60, Zero::zero());
         start_cheat_caller_address(setup.core.contract_address, setup.adapter);
-        setup.core.apply_liquidity_state(
-            -60,
-            60,
-            i129_to_signed_u256(i129 { mag: 1, sign: false }),
-            u256_from_u128(0),
-            u256_from_u128(0),
-            setup.pool_key.fee,
-            setup.pool_key.tick_spacing,
-            7,
-            11,
-            setup.token0,
-            setup.token1,
-        );
+        setup
+            .core
+            .apply_liquidity_state(
+                -60,
+                60,
+                i129_to_signed_u256(i129 { mag: 1, sign: false }),
+                u256_from_u128(0),
+                u256_from_u128(0),
+                setup.pool_key.fee,
+                setup.pool_key.tick_spacing,
+                7,
+                11,
+                setup.token0,
+                setup.token1,
+            );
         stop_cheat_caller_address(setup.core.contract_address);
 
-        assert(
-            setup.core.get_protocol_fees_collected(setup.token0) == 7,
-            'protocol fee token0',
-        );
-        assert(
-            setup.core.get_protocol_fees_collected(setup.token1) == 11,
-            'protocol fee token1',
-        );
+        assert(setup.core.get_protocol_fees_collected(setup.token0) == 7, 'protocol fee token0');
+        assert(setup.core.get_protocol_fees_collected(setup.token1) == 11, 'protocol fee token1');
     }
 
     #[test]
@@ -713,24 +677,22 @@ mod shielded_mode {
 }
 
 
-
 mod save_load_tests {
-    use super::{Deployer, DeployerTrait, ICoreDispatcherTrait, SavedBalanceKey};
     use core::traits::TryInto;
+    use super::{Deployer, DeployerTrait, ICoreDispatcherTrait, SavedBalanceKey};
 
     #[test]
     #[should_panic(expected: ('DISABLED_IN_SHIELDED_MODE',))]
     fn test_save_disabled_in_shielded_mode() {
         let mut d: Deployer = Default::default();
         let core = d.deploy_core();
-        core.save(
-            SavedBalanceKey {
-                owner: 1.try_into().unwrap(),
-                token: 2.try_into().unwrap(),
-                salt: 3,
-            },
-            1,
-        );
+        core
+            .save(
+                SavedBalanceKey {
+                    owner: 1.try_into().unwrap(), token: 2.try_into().unwrap(), salt: 3,
+                },
+                1,
+            );
     }
 
     #[test]
@@ -746,12 +708,11 @@ mod save_load_tests {
     fn test_get_saved_balance_disabled_in_shielded_mode() {
         let mut d: Deployer = Default::default();
         let core = d.deploy_core();
-        core.get_saved_balance(
-            SavedBalanceKey {
-                owner: 1.try_into().unwrap(),
-                token: 2.try_into().unwrap(),
-                salt: 3,
-            },
-        );
+        core
+            .get_saved_balance(
+                SavedBalanceKey {
+                    owner: 1.try_into().unwrap(), token: 2.try_into().unwrap(), salt: 3,
+                },
+            );
     }
 }

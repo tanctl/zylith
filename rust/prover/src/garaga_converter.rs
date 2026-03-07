@@ -5,6 +5,7 @@ use std::path::Path;
 
 use num_bigint::BigUint;
 use tokio::process::Command;
+use tokio::sync::OnceCell;
 
 use crate::error::ProverError;
 
@@ -13,13 +14,14 @@ const STARK_FIELD_MODULUS_HEX: &str =
 const EXPECTED_GARAGA_VERSION: &str = "0.18.2";
 const EXPECTED_GARAGA_SHA256: &str =
     "d9506be4e9f120a4ff6db3140c090ac6371ff502563241295df5153ef07d8345";
+static GARAGA_PIN_CHECK: OnceCell<()> = OnceCell::const_new();
 
 pub async fn generate_garaga_calldata(
     vk_path: &Path,
     proof_path: &Path,
     public_inputs_path: &Path,
 ) -> Result<Vec<String>, ProverError> {
-    ensure_garaga_pinned().await?;
+    ensure_garaga_pinned_once().await?;
     if !vk_path.exists() {
         return Err(ProverError::InvalidInput(format!(
             "missing verification key at {}",
@@ -80,9 +82,14 @@ pub async fn generate_garaga_calldata(
     Ok(calldata)
 }
 
-pub fn serialize_public_inputs_for_garaga(
-    inputs: Vec<String>,
-) -> Result<Vec<String>, ProverError> {
+async fn ensure_garaga_pinned_once() -> Result<(), ProverError> {
+    GARAGA_PIN_CHECK
+        .get_or_try_init(|| async { ensure_garaga_pinned().await })
+        .await?;
+    Ok(())
+}
+
+pub fn serialize_public_inputs_for_garaga(inputs: Vec<String>) -> Result<Vec<String>, ProverError> {
     inputs
         .into_iter()
         .map(|value| bn254_to_felt252(&value))
@@ -110,7 +117,10 @@ pub fn bytes32_to_u128_limbs(value: [u8; 32]) -> (u128, u128) {
     let mut high_bytes = [0u8; 16];
     high_bytes.copy_from_slice(&value[..16]);
     low_bytes.copy_from_slice(&value[16..]);
-    (u128::from_be_bytes(low_bytes), u128::from_be_bytes(high_bytes))
+    (
+        u128::from_be_bytes(low_bytes),
+        u128::from_be_bytes(high_bytes),
+    )
 }
 
 fn stark_field_modulus() -> Result<BigUint, ProverError> {
@@ -143,9 +153,8 @@ async fn ensure_garaga_pinned() -> Result<(), ProverError> {
         )));
     }
     let version_stdout = String::from_utf8_lossy(&version_output.stdout);
-    let version = parse_garaga_version(&version_stdout).ok_or_else(|| {
-        ProverError::Garaga("garaga --version output unrecognized".to_string())
-    })?;
+    let version = parse_garaga_version(&version_stdout)
+        .ok_or_else(|| ProverError::Garaga("garaga --version output unrecognized".to_string()))?;
     if version != EXPECTED_GARAGA_VERSION {
         return Err(ProverError::Garaga(format!(
             "garaga version mismatch: expected {} got {}",
@@ -159,9 +168,7 @@ async fn ensure_garaga_pinned() -> Result<(), ProverError> {
         .await
         .map_err(|err| ProverError::Garaga(format!("failed to locate garaga: {err}")))?;
     if !path_output.status.success() {
-        return Err(ProverError::Garaga(
-            "garaga not found on PATH".to_string(),
-        ));
+        return Err(ProverError::Garaga("garaga not found on PATH".to_string()));
     }
     let path_stdout = String::from_utf8_lossy(&path_output.stdout);
     let garaga_path = path_stdout
@@ -220,8 +227,8 @@ mod tests {
 
     #[test]
     fn bn254_to_felt_rejects_modulus() {
-        let modulus = BigUint::parse_bytes(STARK_FIELD_MODULUS_HEX.as_bytes(), 16)
-            .expect("modulus");
+        let modulus =
+            BigUint::parse_bytes(STARK_FIELD_MODULUS_HEX.as_bytes(), 16).expect("modulus");
         let value = modulus.to_str_radix(10);
         let err = bn254_to_felt252(&value).expect_err("reject modulus");
         match err {

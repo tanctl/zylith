@@ -6,10 +6,10 @@ pub mod core;
 pub mod interfaces;
 pub mod math;
 pub mod privacy;
-pub mod types;
 
 #[cfg(test)]
 mod tests;
+pub mod types;
 
 #[cfg(test)]
 mod constants_test {

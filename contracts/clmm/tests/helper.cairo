@@ -1,16 +1,17 @@
 use core::integer::u256;
 use core::num::traits::Zero;
 use core::traits::{Into, TryInto};
-use snforge_std::{declare, ContractClassTrait, DeclareResultTrait};
-use starknet::ContractAddress;
-use starknet::SyscallResultTrait;
+use snforge_std::{ContractClassTrait, DeclareResultTrait, declare};
+use starknet::{ContractAddress, SyscallResultTrait};
 use crate::components::util::serialize;
 use crate::interfaces::core::{
     ICoreDispatcher, ICoreDispatcherTrait, SwapParameters, UpdatePositionParameters,
 };
 use crate::interfaces::upgradeable::IUpgradeableDispatcher;
 use crate::tests::mock_erc20::{IMockERC20Dispatcher, MockERC20IERC20ImplTrait};
-use crate::tests::mocks::locker::{Action, ActionResult, ICoreLockerDispatcher, ICoreLockerDispatcherTrait};
+use crate::tests::mocks::locker::{
+    Action, ActionResult, ICoreLockerDispatcher, ICoreLockerDispatcherTrait,
+};
 use crate::types::bounds::Bounds;
 use crate::types::delta::Delta;
 use crate::types::i129::i129;
@@ -282,9 +283,7 @@ pub fn update_position_inner(
                 (
                     pool_key,
                     UpdatePositionParameters {
-                        bounds,
-                        liquidity_delta: i129_to_signed_u256(liquidity_delta),
-                        salt: 0,
+                        bounds, liquidity_delta: i129_to_signed_u256(liquidity_delta), salt: 0,
                     },
                     recipient,
                 ),

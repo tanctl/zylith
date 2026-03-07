@@ -236,9 +236,7 @@ pub trait ICore<TContractState> {
     );
 
     // Applies a protocol fee withdrawal to accounting only (no ERC20 transfer).
-    fn apply_protocol_fee_withdraw(
-        ref self: TContractState, token: ContractAddress, amount: u128
-    );
+    fn apply_protocol_fee_withdraw(ref self: TContractState, token: ContractAddress, amount: u128);
 
     // Locks the core contract, allowing other functions to be called that require locking.
     // The lock callback is called with the input data, and the returned array is passed through to

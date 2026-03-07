@@ -170,7 +170,7 @@ template I32RangeCheck() {
     sign_top * lower_sum === 0;
 }
 
-template PrivateSwap() {
+template PrivateSwapDir(ZERO_FOR_ONE) {
     // tis implementation currently supports up to 16 initialized-tick crossings per wap proof. saps exceeding this must be chunked or use future recursive proofs.
     var MAX_STEPS = MAX_SWAP_STEPS();
     var MAX_NOTES = MAX_INPUT_NOTES();
@@ -244,11 +244,13 @@ template PrivateSwap() {
     }
 
     // zero_for_one boolean
-    zero_for_one * (zero_for_one - 1) === 0;
-    // token_id_in must be 0 or 1 and match direction
+    zero_for_one === ZERO_FOR_ONE;
     token_id_in * (token_id_in - 1) === 0;
-    zero_for_one * token_id_in === 0;
-    (1 - zero_for_one) * (token_id_in - 1) === 0;
+    if (ZERO_FOR_ONE == 1) {
+        token_id_in === 0;
+    } else {
+        token_id_in === 1;
+    }
 
     // range checks for u128 public quantities
     component rc_liq_before = U128ToU256Limbs();
@@ -384,8 +386,11 @@ template PrivateSwap() {
         cmp_dir_final.a[d] <== dec_price_start_dir.limbs[d];
         cmp_dir_final.b[d] <== dec_price_end_dir.limbs[d];
     }
-    zero_for_one * (cmp_dir_final.gt + cmp_dir_final.eq) === zero_for_one;
-    (1 - zero_for_one) * (cmp_dir_final.lt + cmp_dir_final.eq) === (1 - zero_for_one);
+    if (ZERO_FOR_ONE == 1) {
+        cmp_dir_final.gt + cmp_dir_final.eq === 1;
+    } else {
+        cmp_dir_final.lt + cmp_dir_final.eq === 1;
+    }
 
     // chains
     signal step_sqrt_price_start[MAX_STEPS + 1];
@@ -419,7 +424,7 @@ template PrivateSwap() {
     }
 
     component dec_limit[MAX_STEPS];
-    component dec_end[MAX_STEPS];
+    component dec_end_public = DecomposeU256ToLimbs();
     component cmp_end_limit[MAX_STEPS];
     signal choose_end[MAX_STEPS];
     component limit_sel[MAX_STEPS];
@@ -427,15 +432,11 @@ template PrivateSwap() {
     signal step_limit_value[MAX_STEPS];
     signal active[MAX_STEPS];
     signal amount_remaining_step[MAX_STEPS];
-    component step_limit_bind[MAX_STEPS];
     component tick_range[MAX_STEPS];
     component dec_step_next[MAX_STEPS];
-    component dec_step_out[MAX_STEPS];
     component step_limit_eq[MAX_STEPS];
     signal step_hit_limit[MAX_STEPS];
-    component step_in_limbs[MAX_STEPS];
     component calc_in[MAX_STEPS];
-    component step_out_limbs[MAX_STEPS];
     component calc_out[MAX_STEPS];
     component rem_a[MAX_STEPS];
     component rem_b[MAX_STEPS];
@@ -452,8 +453,6 @@ template PrivateSwap() {
     signal fee_inc[MAX_STEPS][4];
     component add0[MAX_STEPS];
     component add1[MAX_STEPS];
-    component fee0_pub[MAX_STEPS];
-    component fee1_pub[MAX_STEPS];
     component fee0_max[MAX_STEPS];
     component fee1_max[MAX_STEPS];
     component crossed_cmp[MAX_STEPS];
@@ -475,26 +474,30 @@ template PrivateSwap() {
     signal limited_next[MAX_STEPS];
     signal overflow_next[MAX_STEPS];
 
+    dec_end_public.value <== sqrt_price_end_public;
+
     for (var i = 0; i < MAX_STEPS; i++) {
         // compute step limit from final price and tick boundary
         dec_limit[i] = DecomposeU256ToLimbs();
         dec_limit[i].value <== step_sqrt_price_limit[i];
-        dec_end[i] = DecomposeU256ToLimbs();
-        dec_end[i].value <== sqrt_price_end_public;
 
         cmp_end_limit[i] = U256Cmp();
         for (var j = 0; j < 4; j++) {
-            cmp_end_limit[i].a[j] <== dec_end[i].limbs[j];
+            cmp_end_limit[i].a[j] <== dec_end_public.limbs[j];
             cmp_end_limit[i].b[j] <== dec_limit[i].limbs[j];
         }
 
-        choose_end[i] <== cmp_end_limit[i].lt + zero_for_one * (cmp_end_limit[i].gt - cmp_end_limit[i].lt);
+        if (ZERO_FOR_ONE == 1) {
+            choose_end[i] <== cmp_end_limit[i].gt;
+        } else {
+            choose_end[i] <== cmp_end_limit[i].lt;
+        }
         choose_end[i] * (choose_end[i] - 1) === 0;
 
         limit_sel[i] = U256Select();
         limit_sel[i].sel <== choose_end[i];
         for (var j2 = 0; j2 < 4; j2++) {
-            limit_sel[i].a[j2] <== dec_end[i].limbs[j2];
+            limit_sel[i].a[j2] <== dec_end_public.limbs[j2];
             limit_sel[i].b[j2] <== dec_limit[i].limbs[j2];
         }
         step_limit_value[i] <== limit_sel[i].out[0]
@@ -503,7 +506,7 @@ template PrivateSwap() {
             + limit_sel[i].out[3] * (1 << 192);
 
         // swap step
-        step[i] = ClmmStep();
+        step[i] = ClmmStepDir(ZERO_FOR_ONE);
         step[i].sqrt_price_start <== step_sqrt_price_start[i];
         step[i].sqrt_price_limit <== step_limit_value[i];
         step[i].liquidity <== step_liquidity[i];
@@ -512,7 +515,6 @@ template PrivateSwap() {
         amount_remaining_step[i] <== amount_remaining[i] * active[i];
         step[i].amount_remaining <== amount_remaining_step[i];
         step[i].fee <== fee;
-        step[i].zero_for_one <== zero_for_one;
         for (var dq0 = 0; dq0 < 4; dq0++) {
             step[i].amount_before_fee_div_q[dq0] <== step_amount_before_fee_div_q[i][dq0];
             step[i].next0_div_floor_q[dq0] <== step_next0_div_floor_q[i][dq0];
@@ -527,50 +529,29 @@ template PrivateSwap() {
             }
         }
 
-        // bind limit limbs to step input
-        step_limit_bind[i] = DecomposeU256ToLimbs();
-        step_limit_bind[i].value <== step_limit_value[i];
-        for (var l = 0; l < 4; l++) {
-            step_limit_bind[i].limbs[l] === limit_sel[i].out[l];
-        }
-
         tick_range[i] = I32RangeCheck();
         tick_range[i].value <== step_tick_next[i];
 
         // enforce step outputs against public next price
         dec_step_next[i] = DecomposeU256ToLimbs();
         dec_step_next[i].value <== step_sqrt_price_next[i];
-        dec_step_out[i] = DecomposeU256ToLimbs();
-        dec_step_out[i].value <== step[i].sqrt_price_next;
-        for (var l2 = 0; l2 < 4; l2++) {
-            dec_step_next[i].limbs[l2] === dec_step_out[i].limbs[l2];
-        }
+        step_sqrt_price_next[i] === step[i].sqrt_price_next;
 
         step_limit_eq[i] = U256Eq();
         for (var lim = 0; lim < 4; lim++) {
             step_limit_eq[i].a[lim] <== dec_step_next[i].limbs[lim];
-            step_limit_eq[i].b[lim] <== step_limit_bind[i].limbs[lim];
+            step_limit_eq[i].b[lim] <== limit_sel[i].out[lim];
         }
         step_hit_limit[i] <== step_limit_eq[i].eq;
 
         // amount in/out binding
-        step_in_limbs[i] = U128ToU256Limbs();
-        step_in_limbs[i].in <== step_amount_in[i];
         calc_in[i] = U128ToU256Limbs();
         calc_in[i].in <== step[i].amount_in;
-        step_in_limbs[i].limbs[0] === calc_in[i].limbs[0];
-        step_in_limbs[i].limbs[1] === calc_in[i].limbs[1];
-        step_in_limbs[i].limbs[2] === 0;
-        step_in_limbs[i].limbs[3] === 0;
+        step_amount_in[i] === step[i].amount_in;
 
-        step_out_limbs[i] = U128ToU256Limbs();
-        step_out_limbs[i].in <== step_amount_out[i];
         calc_out[i] = U128ToU256Limbs();
         calc_out[i].in <== step[i].amount_out;
-        step_out_limbs[i].limbs[0] === calc_out[i].limbs[0];
-        step_out_limbs[i].limbs[1] === calc_out[i].limbs[1];
-        step_out_limbs[i].limbs[2] === 0;
-        step_out_limbs[i].limbs[3] === 0;
+        step_amount_out[i] === step[i].amount_out;
 
         // update amount remaining
         rem_a[i] = U128ToU256Limbs();
@@ -631,29 +612,36 @@ template PrivateSwap() {
         for (var p = 0; p < 4; p++) {
             add0[i].a[p] <== step_fee_growth_0[i][p];
             add1[i].a[p] <== step_fee_growth_1[i][p];
-            add0[i].b[p] <== fee_inc[i][p] * zero_for_one;
-            add1[i].b[p] <== fee_inc[i][p] * (1 - zero_for_one);
+            if (ZERO_FOR_ONE == 1) {
+                add0[i].b[p] <== fee_inc[i][p];
+                add1[i].b[p] <== 0;
+            } else {
+                add0[i].b[p] <== 0;
+                add1[i].b[p] <== fee_inc[i][p];
+            }
         }
         add0[i].carry === 0;
         add1[i].carry === 0;
 
         // bind to public fee growth outputs
-        fee0_pub[i] = DecomposeU256ToLimbs();
-        fee0_pub[i].value <== step_fee_growth_global_0[i];
-        fee1_pub[i] = DecomposeU256ToLimbs();
-        fee1_pub[i].value <== step_fee_growth_global_1[i];
+        step_fee_growth_global_0[i] === add0[i].out[0]
+            + add0[i].out[1] * (1 << 64)
+            + add0[i].out[2] * (1 << 128)
+            + add0[i].out[3] * (1 << 192);
+        step_fee_growth_global_1[i] === add1[i].out[0]
+            + add1[i].out[1] * (1 << 64)
+            + add1[i].out[2] * (1 << 128)
+            + add1[i].out[3] * (1 << 192);
         for (var q = 0; q < 4; q++) {
-            fee0_pub[i].limbs[q] === add0[i].out[q];
-            fee1_pub[i].limbs[q] === add1[i].out[q];
             step_fee_growth_0[i + 1][q] <== add0[i].out[q];
             step_fee_growth_1[i + 1][q] <== add1[i].out[q];
         }
         fee0_max[i] = U256Cmp();
         fee1_max[i] = U256Cmp();
         for (var qm = 0; qm < 4; qm++) {
-            fee0_max[i].a[qm] <== fee0_pub[i].limbs[qm];
+            fee0_max[i].a[qm] <== add0[i].out[qm];
             fee0_max[i].b[qm] <== max_fee_limbs.limbs[qm];
-            fee1_max[i].a[qm] <== fee1_pub[i].limbs[qm];
+            fee1_max[i].a[qm] <== add1[i].out[qm];
             fee1_max[i].b[qm] <== max_fee_limbs.limbs[qm];
         }
         fee0_max[i].lt + fee0_max[i].eq === 1;
@@ -670,7 +658,11 @@ template PrivateSwap() {
         liq_net[i] = DecodeSignedI256ToU128();
         liq_net[i].value <== step_liquidity_net[i];
 
-        add_liq[i] <== 1 - (liq_net[i].sign + zero_for_one - 2 * liq_net[i].sign * zero_for_one);
+        if (ZERO_FOR_ONE == 1) {
+            add_liq[i] <== liq_net[i].sign;
+        } else {
+            add_liq[i] <== 1 - liq_net[i].sign;
+        }
         add_liq[i] * (add_liq[i] - 1) === 0;
 
         liq_add[i] = U128Add();
@@ -702,7 +694,7 @@ template PrivateSwap() {
         end_eq[i] = U256Eq();
         for (var he = 0; he < 4; he++) {
             end_eq[i].a[he] <== dec_step_next[i].limbs[he];
-            end_eq[i].b[he] <== dec_end[i].limbs[he];
+            end_eq[i].b[he] <== dec_end_public.limbs[he];
         }
         step_hit_end[i] <== end_eq[i].eq;
 
@@ -729,9 +721,9 @@ template PrivateSwap() {
     component fee1_after_cmp = U256Cmp();
     for (var f = 0; f < 4; f++) {
         fee0_after_cmp.a[f] <== fee0_before_limbs.limbs[f];
-        fee0_after_cmp.b[f] <== fee0_pub[MAX_STEPS - 1].limbs[f];
+        fee0_after_cmp.b[f] <== step_fee_growth_0[MAX_STEPS][f];
         fee1_after_cmp.a[f] <== fee1_before_limbs.limbs[f];
-        fee1_after_cmp.b[f] <== fee1_pub[MAX_STEPS - 1].limbs[f];
+        fee1_after_cmp.b[f] <== step_fee_growth_1[MAX_STEPS][f];
     }
     fee0_after_cmp.lt + fee0_after_cmp.eq === 1;
     fee1_after_cmp.lt + fee1_after_cmp.eq === 1;
@@ -739,10 +731,6 @@ template PrivateSwap() {
     // sum checks
     amount_in_consumed <== sum_in_chain[MAX_STEPS];
     amount_out <== sum_out_chain[MAX_STEPS];
-    component rc_amt_consumed = Num2Bits(128);
-    rc_amt_consumed.in <== amount_in_consumed;
-    component rc_amt_out_total = Num2Bits(128);
-    rc_amt_out_total.in <== amount_out;
     component output_note = TokenNote();
     output_note.token_id <== token_id_out;
     output_note.amount <== amount_out;
@@ -759,14 +747,6 @@ template PrivateSwap() {
     has_output <== 1 - out_zero.out;
     has_output * (has_output - 1) === 0;
     output_commitment === has_output * output_note.commitment;
-    component dec_amt_consumed = DecomposeU256ToLimbs();
-    dec_amt_consumed.value <== amount_in_consumed;
-    dec_amt_consumed.limbs[2] === 0;
-    dec_amt_consumed.limbs[3] === 0;
-    component dec_amt_out_total = DecomposeU256ToLimbs();
-    dec_amt_out_total.value <== amount_out;
-    dec_amt_out_total.limbs[2] === 0;
-    dec_amt_out_total.limbs[3] === 0;
 
     component note_limbs = U128ToU256Limbs();
     note_limbs.in <== note_amount_total;
@@ -799,30 +779,3 @@ template PrivateSwap() {
     is_limited === limited_accum[MAX_STEPS];
     is_limited * (is_limited - 1) === 0;
 }
-
-component main { public [
-    tag,
-    merkle_root,
-    nullifier,
-    sqrt_price_start,
-    sqrt_price_end_public,
-    liquidity_before,
-    fee,
-    fee_growth_global_0_before,
-    fee_growth_global_1_before,
-    output_commitment,
-    change_commitment,
-    is_limited,
-    zero_for_one,
-    step_sqrt_price_next,
-    step_sqrt_price_limit,
-    step_tick_next,
-    step_liquidity_net,
-    step_fee_growth_global_0,
-    step_fee_growth_global_1,
-    commitment_in,
-    token_id_in,
-    note_count,
-    nullifier_extra,
-    commitment_extra
-] } = PrivateSwap();

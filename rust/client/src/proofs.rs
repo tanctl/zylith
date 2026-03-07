@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use num_bigint::BigUint;
 use num_traits::{CheckedSub, One, ToPrimitive, Zero};
@@ -8,6 +8,7 @@ use starknet::accounts::ConnectedAccount;
 use starknet::core::types::{BlockId, BlockTag, Felt, FunctionCall, U256};
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::Provider;
+use tokio::time::{sleep, Duration};
 
 use crate::client::{PoolConfig, ZylithClient};
 use crate::error::ClientError;
@@ -19,11 +20,12 @@ use crate::notes::{
 };
 use crate::swap::{
     asp_client, with_retry, MerklePath, SignedAmount, SwapClient, SwapQuoteRequest, SwapStepsQuote,
+    TxHash,
 };
 use crate::utils::felt_to_u128;
 use zylith_prover::{
-    prove_lp_add, prove_lp_claim, prove_lp_remove, prove_swap, prove_swap_exact_out, LpWitnessInputs,
-    ProofCalldata, SwapWitnessInputs, WitnessValue,
+    prove_lp_add, prove_lp_claim, prove_lp_remove, prove_swap, prove_swap_exact_out,
+    LpWitnessInputs, ProofCalldata, SwapWitnessInputs, WitnessValue,
 };
 
 const VK_SWAP_DEC: &str = "1398227280";
@@ -31,8 +33,42 @@ const VK_SWAP_EXACT_OUT_DEC: &str = "1690353060931437599809942001243476";
 const VK_LIQ_ADD_DEC: &str = "21472712069301316";
 const VK_LIQ_REMOVE_DEC: &str = "360252328511171296450117";
 const VK_LIQ_CLAIM_DEC: &str = "1407235658182455019853";
+const SWAP_STEPS_PREFIX_HEX: &str = "0x535741505f5354455053";
 
 const U128_MAX: u128 = 0xffffffffffffffffffffffffffffffff;
+const MAX_TICK_MAGNITUDE: u128 = 88_722_883;
+const SWAP_CIRCUIT_STEP_OPTIONS: [usize; 2] = [4, 8];
+const CHUNK_POLL_MAX_ATTEMPTS: usize = 240;
+const CHUNK_POLL_DELAY_MS: u64 = 500;
+const TICK_SQRT_RATIO_MULTIPLIERS: [u128; 27] = [
+    0xffff_f79c_8499_329c_7cbb_2510_d893_283b,
+    0xffff_ef39_0978_c398_134b_4ff3_764f_e410,
+    0xffff_de72_140b_00a3_54bd_3dc8_28e9_76c9,
+    0xffff_bce4_2c7b_e6c9_98ad_6318_193c_0b18,
+    0xffff_79c8_6a8f_6150_a32d_9778_ecee_f97c,
+    0xfffe_f391_1b7c_ff24_ba1b_3dbb_5f8f_5974,
+    0xfffd_e723_5072_5cc4_ea8f_eece_3b5f_13c8,
+    0xfffb_ce4b_06c1_96e9_247a_c876_95d5_3c60,
+    0xfff7_9ca7_a4d1_bf1e_e855_6cea_23cd_baa5,
+    0xffef_3995_a5b6_a626_7530_f207_142a_5764,
+    0xffde_7444_b281_4550_8125_d100_77ba_83b8,
+    0xffbc_ecee_b791_747f_10df_216f_2e53_ec57,
+    0xff79_eb70_6b9a_64c6_431d_76e6_3531_e929,
+    0xfef4_1d1a_5f2a_e3a2_0676_bec6_f7f9_459a,
+    0xfde9_5287_d26d_81be_a159_c370_7312_2c73,
+    0xfbd7_01c7_cbc4_c8a6_bb81_efd2_32d1_e4e7,
+    0xf7bf_5211_c72f_5185_f372_aeb1_d48f_937e,
+    0xefc2_bf59_df33_ecc2_8125_cf78_ec4f_167f,
+    0xe08d_3570_6200_7962_73f0_b3a9_81d9_0cfd,
+    0xc4f7_6b68_9474_82dc_198a_48a5_4348_c4ed,
+    0x978b_cb98_9431_7807_e5fa_4498_eee7_c0fa,
+    0x59b6_3684_b86e_9f48_6ec5_4727_371b_a6ca,
+    0x1f70_3399_d88f_6aa8_3a28_b22d_4a1f_56e3,
+    0x03dc_5dac_7376_e20f_c867_9758_d1bc_dcfc,
+    0x000e_e7e3_2d61_fdb0_a5e6_22b8_20f6_81d0,
+    0x00de_2ee4_bc38_1afa_7089_aa84_bb66,
+    0xc0d5_5d4d_7152_c25f_b139,
+];
 
 #[derive(Debug, Clone)]
 pub struct SwapProveRequest {
@@ -55,6 +91,32 @@ pub struct SwapProveResult {
     pub change_note: Option<Note>,
     pub amount_out: u128,
     pub amount_in_consumed: u128,
+    pub selected_swap_steps: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkedSwapExecuteRequest {
+    pub notes: Vec<Note>,
+    pub zero_for_one: bool,
+    pub sqrt_ratio_limit: Option<U256>,
+    pub circuit_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkedSwapChunkResult {
+    pub tx_hash: TxHash,
+    pub amount_out: u128,
+    pub amount_in_consumed: u128,
+    pub selected_swap_steps: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkedSwapExecuteResult {
+    pub chunks: Vec<ChunkedSwapChunkResult>,
+    pub output_notes: Vec<Note>,
+    pub final_change_note: Option<Note>,
+    pub total_amount_out: u128,
+    pub total_amount_in_consumed: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -105,18 +167,25 @@ pub struct LiquidityProveResult {
 }
 
 impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
-    pub async fn prove_swap(&self, request: SwapProveRequest) -> Result<SwapProveResult, ClientError> {
+    pub async fn prove_swap(
+        &self,
+        request: SwapProveRequest,
+    ) -> Result<SwapProveResult, ClientError> {
         let swap_client = self.swap_client();
         let pool_config = swap_client.get_pool_config().await?;
         if request.notes.len() > generated_constants::MAX_INPUT_NOTES {
-            return Err(ClientError::InvalidInput("too many input notes".to_string()));
+            return Err(ClientError::InvalidInput(
+                "too many input notes".to_string(),
+            ));
         }
         let (token_id_in, input_token, output_token) =
             resolve_swap_tokens(&request.notes, &pool_config, request.zero_for_one)?;
 
         let total_amount_in = sum_note_amounts(&request.notes)?;
         if total_amount_in == 0 {
-            return Err(ClientError::InvalidInput("input amount is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "input amount is zero".to_string(),
+            ));
         }
         let amount_out_requested = if request.exact_out {
             request
@@ -128,10 +197,9 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         if request.exact_out && amount_out_requested == 0 {
             return Err(ClientError::InvalidInput("amount_out is zero".to_string()));
         }
-        let sqrt_ratio_limit =
-            request
-                .sqrt_ratio_limit
-                .unwrap_or_else(|| default_sqrt_ratio_limit(&pool_config, request.zero_for_one));
+        let sqrt_ratio_limit = request
+            .sqrt_ratio_limit
+            .unwrap_or_else(|| default_sqrt_ratio_limit(&pool_config, request.zero_for_one));
 
         let is_token1 = if request.exact_out {
             request.zero_for_one
@@ -139,9 +207,15 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
             !request.zero_for_one
         };
         let quote_amount = if request.exact_out {
-            SignedAmount { mag: amount_out_requested, sign: true }
+            SignedAmount {
+                mag: amount_out_requested,
+                sign: true,
+            }
         } else {
-            SignedAmount { mag: total_amount_in, sign: false }
+            SignedAmount {
+                mag: total_amount_in,
+                sign: false,
+            }
         };
         let mut quote = swap_client
             .quote_swap_steps(SwapQuoteRequest {
@@ -171,12 +245,8 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
             return Err(ClientError::Rpc("unexpected swap steps length".to_string()));
         }
 
-        let mut step_liquidity = compute_step_liquidity(
-            &swap_client,
-            &quote,
-            request.zero_for_one,
-        )
-        .await?;
+        let mut step_liquidity =
+            compute_step_liquidity(&swap_client, &quote, request.zero_for_one).await?;
         let remaining_start = if request.exact_out {
             amount_out_requested
         } else {
@@ -190,13 +260,33 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
             request.zero_for_one,
         )? {
             quote = adjusted;
-            step_liquidity = compute_step_liquidity(&swap_client, &quote, request.zero_for_one).await?;
+            step_liquidity =
+                compute_step_liquidity(&swap_client, &quote, request.zero_for_one).await?;
         }
 
+        let active_steps = count_active_swap_steps(&quote);
+        let circuit_plan = select_swap_circuit_plan(
+            request.circuit_dir.clone(),
+            request.exact_out,
+            request.zero_for_one,
+            active_steps,
+        )?;
+        if request.exact_out && active_steps > circuit_plan.max_steps {
+            return Err(ClientError::InvalidInput(format!(
+                "exact-out swap requires {active_steps} steps but selected circuit supports {}; use a larger circuit variant",
+                circuit_plan.max_steps
+            )));
+        }
+
+        let quote_for_circuit = truncate_swap_quote(&quote, circuit_plan.max_steps);
+        let step_liquidity_for_circuit = step_liquidity[..circuit_plan.max_steps].to_vec();
+
         let (_step_amount_in, _step_amount_out, amount_out_total, amount_in_consumed) =
-            summarize_swap_amounts(&quote.steps)?;
+            summarize_swap_amounts(&quote_for_circuit.steps)?;
         if request.exact_out && amount_out_total != amount_out_requested {
-            return Err(ClientError::InvalidInput("quoted amount_out mismatch".to_string()));
+            return Err(ClientError::InvalidInput(
+                "quoted amount_out mismatch".to_string(),
+            ));
         }
 
         let change_amount = total_amount_in
@@ -242,8 +332,8 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
                 &output_note,
                 &change_note,
                 &pool_config,
-                &quote,
-                &step_liquidity,
+                &quote_for_circuit,
+                &step_liquidity_for_circuit,
                 &merkle_root,
                 output_commitment,
                 change_commitment,
@@ -255,26 +345,24 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
                 &output_note,
                 &change_note,
                 &pool_config,
-                &quote,
-                &step_liquidity,
+                &quote_for_circuit,
+                &step_liquidity_for_circuit,
                 &merkle_root,
                 output_commitment,
                 change_commitment,
             )?
         };
 
-        let circuit_dir = request
-            .circuit_dir
-            .unwrap_or_else(|| default_circuit_dir(if request.exact_out { "private_swap_exact_out" } else { "private_swap" }));
-        let proof = if request.exact_out {
-            prove_swap_exact_out(swap_witness, &circuit_dir)
+        let mut proof = if request.exact_out {
+            prove_swap_exact_out(swap_witness, &circuit_plan.dir)
                 .await
                 .map_err(|e| ClientError::Prover(e.to_string()))?
         } else {
-            prove_swap(swap_witness, &circuit_dir)
+            prove_swap(swap_witness, &circuit_plan.dir)
                 .await
                 .map_err(|e| ClientError::Prover(e.to_string()))?
         };
+        prefix_swap_variant_selector(&mut proof, circuit_plan.max_steps, request.zero_for_one);
 
         Ok(SwapProveResult {
             proof,
@@ -284,7 +372,114 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
             change_note,
             amount_out: amount_out_total,
             amount_in_consumed,
+            selected_swap_steps: circuit_plan.max_steps,
         })
+    }
+
+    // Executes an exact-in swap across as many proof chunks as needed. This is sequential and
+    // non-atomic because each follow-up chunk must spend the previous chunk's change note after it
+    // is finalized on-chain and indexed by the ASP.
+    pub async fn execute_chunked_swap_exact_in(
+        &self,
+        request: ChunkedSwapExecuteRequest,
+    ) -> Result<ChunkedSwapExecuteResult, ClientError> {
+        if request.notes.is_empty() {
+            return Err(ClientError::InvalidInput(
+                "notes cannot be empty".to_string(),
+            ));
+        }
+
+        let swap_client = self.swap_client();
+        let pool_config = swap_client.get_pool_config().await?;
+        let sqrt_ratio_limit = request
+            .sqrt_ratio_limit
+            .unwrap_or_else(|| default_sqrt_ratio_limit(&pool_config, request.zero_for_one));
+
+        let mut current_notes = request.notes;
+        let mut output_notes = Vec::new();
+        let mut chunks = Vec::new();
+        let mut total_amount_out = 0u128;
+        let mut total_amount_in_consumed = 0u128;
+
+        loop {
+            let prove_result = self
+                .prove_swap(SwapProveRequest {
+                    notes: current_notes.clone(),
+                    zero_for_one: request.zero_for_one,
+                    exact_out: false,
+                    amount_out: None,
+                    sqrt_ratio_limit: Some(sqrt_ratio_limit),
+                    output_note: None,
+                    change_note: None,
+                    circuit_dir: request.circuit_dir.clone(),
+                })
+                .await?;
+
+            if prove_result.amount_in_consumed == 0 {
+                return Err(ClientError::InvalidInput(
+                    "chunked swap made no progress".to_string(),
+                ));
+            }
+
+            let tx_hash = self
+                .swap(
+                    prove_result.proof.clone(),
+                    &prove_result.input_proofs,
+                    &prove_result.output_proofs,
+                    false,
+                )
+                .await?;
+            swap_client.wait_for_transaction_success(tx_hash).await?;
+
+            total_amount_out = total_amount_out
+                .checked_add(prove_result.amount_out)
+                .ok_or_else(|| ClientError::InvalidInput("amount_out overflow".to_string()))?;
+            total_amount_in_consumed = total_amount_in_consumed
+                .checked_add(prove_result.amount_in_consumed)
+                .ok_or_else(|| ClientError::InvalidInput("amount_in overflow".to_string()))?;
+
+            if let Some(note) = prove_result.output_note.clone() {
+                output_notes.push(note);
+            }
+            chunks.push(ChunkedSwapChunkResult {
+                tx_hash,
+                amount_out: prove_result.amount_out,
+                amount_in_consumed: prove_result.amount_in_consumed,
+                selected_swap_steps: prove_result.selected_swap_steps,
+            });
+
+            let Some(change_note) = prove_result.change_note.clone() else {
+                return Ok(ChunkedSwapExecuteResult {
+                    chunks,
+                    output_notes,
+                    final_change_note: None,
+                    total_amount_out,
+                    total_amount_in_consumed,
+                });
+            };
+
+            let token_id_in = input_token_id(request.zero_for_one);
+            wait_for_note_indexed(&swap_client, &change_note, token_id_in).await?;
+
+            if !chunk_can_progress(
+                &swap_client,
+                std::slice::from_ref(&change_note),
+                request.zero_for_one,
+                sqrt_ratio_limit,
+            )
+            .await?
+            {
+                return Ok(ChunkedSwapExecuteResult {
+                    chunks,
+                    output_notes,
+                    final_change_note: Some(change_note),
+                    total_amount_out,
+                    total_amount_in_consumed,
+                });
+            }
+
+            current_notes = vec![change_note];
+        }
     }
 
     pub async fn prove_liquidity_add(
@@ -294,16 +489,22 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let swap_client = self.swap_client();
         let pool_config = swap_client.get_pool_config().await?;
         if request.token0_notes.len() > generated_constants::MAX_INPUT_NOTES {
-            return Err(ClientError::InvalidInput("too many token0 notes".to_string()));
+            return Err(ClientError::InvalidInput(
+                "too many token0 notes".to_string(),
+            ));
         }
         if request.token1_notes.len() > generated_constants::MAX_INPUT_NOTES {
-            return Err(ClientError::InvalidInput("too many token1 notes".to_string()));
+            return Err(ClientError::InvalidInput(
+                "too many token1 notes".to_string(),
+            ));
         }
         let tick_lower = request.tick_lower;
         let tick_upper = request.tick_upper;
         let liquidity_delta = request.liquidity_delta;
         if liquidity_delta == 0 {
-            return Err(ClientError::InvalidInput("liquidity_delta is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "liquidity_delta is zero".to_string(),
+            ));
         }
 
         if let Some(note) = &request.position_note {
@@ -318,17 +519,17 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let sqrt_price_start = pool_state.sqrt_price;
         let tick_start = pool_state.tick;
         let liquidity_before = pool_state.liquidity;
-        let fee_growth_global_0_before =
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1);
-        let fee_growth_global_1_before =
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1);
+        let fee_growth_global_0_before = U256::from_words(
+            pool_state.fee_growth_global_0.0,
+            pool_state.fee_growth_global_0.1,
+        );
+        let fee_growth_global_1_before = U256::from_words(
+            pool_state.fee_growth_global_1.0,
+            pool_state.fee_growth_global_1.1,
+        );
 
-        let (sqrt_ratio_lower, sqrt_ratio_upper) = fetch_tick_sqrt_ratios(
-            &swap_client,
-            tick_lower,
-            tick_upper,
-        )
-        .await?;
+        let (sqrt_ratio_lower, sqrt_ratio_upper) =
+            fetch_tick_sqrt_ratios(&swap_client, tick_lower, tick_upper).await?;
         let (fee_growth_inside_0_after, fee_growth_inside_1_after) =
             fetch_fee_growth_inside(&swap_client, tick_lower, tick_upper).await?;
 
@@ -341,29 +542,29 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
             mut position_secret_in,
             mut position_nullifier_seed_in,
         ) = match &request.position_note {
-                Some(note) => {
-                    let commitment = compute_position_commitment(note)?;
-                    let nullifier = generate_position_nullifier_hash(note)?;
-                    (
-                        commitment,
-                        nullifier,
-                        note.liquidity,
-                        note.fee_growth_inside_0,
-                        note.fee_growth_inside_1,
-                        Some(note.secret),
-                        Some(note.nullifier),
-                    )
-                }
-                None => (
-                    Felt::ZERO,
-                    Felt::ZERO,
-                    liquidity_delta,
-                    fee_growth_inside_0_after,
-                    fee_growth_inside_1_after,
-                    None,
-                    None,
-                ),
-            };
+            Some(note) => {
+                let commitment = compute_position_commitment(note)?;
+                let nullifier = generate_position_nullifier_hash(note)?;
+                (
+                    commitment,
+                    nullifier,
+                    note.liquidity,
+                    note.fee_growth_inside_0,
+                    note.fee_growth_inside_1,
+                    Some(note.secret),
+                    Some(note.nullifier),
+                )
+            }
+            None => (
+                Felt::ZERO,
+                Felt::ZERO,
+                liquidity_delta,
+                fee_growth_inside_0_after,
+                fee_growth_inside_1_after,
+                None,
+                None,
+            ),
+        };
         if position_secret_in.is_none() {
             let dummy = generate_position_note(
                 tick_lower,
@@ -413,18 +614,10 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let change0 = token0_total - amount0;
         let change1 = token1_total - amount1;
 
-        let output_note_token0 = build_output_note(
-            request.output_note_token0,
-            change0,
-            pool_config.token0,
-            0,
-        )?;
-        let output_note_token1 = build_output_note(
-            request.output_note_token1,
-            change1,
-            pool_config.token1,
-            1,
-        )?;
+        let output_note_token0 =
+            build_output_note(request.output_note_token0, change0, pool_config.token0, 0)?;
+        let output_note_token1 =
+            build_output_note(request.output_note_token1, change1, pool_config.token1, 1)?;
 
         let output_commitment_token0 = match &output_note_token0 {
             Some(note) => compute_commitment(note, 0)?,
@@ -441,7 +634,11 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let root_position = fetch_position_root(&swap_client, position_commitment_in).await?;
 
         let proof_position = if position_commitment_in != Felt::ZERO {
-            Some(swap_client.fetch_merkle_path(position_commitment_in, None, None).await?)
+            Some(
+                swap_client
+                    .fetch_merkle_path(position_commitment_in, None, None)
+                    .await?,
+            )
         } else {
             None
         };
@@ -531,7 +728,9 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let position_note = request.position_note;
         let liquidity_delta = request.liquidity_delta;
         if liquidity_delta == 0 {
-            return Err(ClientError::InvalidInput("liquidity_delta is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "liquidity_delta is zero".to_string(),
+            ));
         }
         if liquidity_delta > position_note.liquidity {
             return Err(ClientError::InvalidInput(
@@ -543,10 +742,14 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let sqrt_price_start = pool_state.sqrt_price;
         let tick_start = pool_state.tick;
         let liquidity_before = pool_state.liquidity;
-        let fee_growth_global_0_before =
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1);
-        let fee_growth_global_1_before =
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1);
+        let fee_growth_global_0_before = U256::from_words(
+            pool_state.fee_growth_global_0.0,
+            pool_state.fee_growth_global_0.1,
+        );
+        let fee_growth_global_1_before = U256::from_words(
+            pool_state.fee_growth_global_1.0,
+            pool_state.fee_growth_global_1.1,
+        );
         let (sqrt_ratio_lower, sqrt_ratio_upper) = fetch_tick_sqrt_ratios(
             &swap_client,
             position_note.tick_lower,
@@ -651,7 +854,11 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let root_token1 = fetch_latest_root(&swap_client, pool_config.token1).await?;
         let root_position = fetch_position_root(&swap_client, position_commitment_in).await?;
 
-        let proof_position = Some(swap_client.fetch_merkle_path(position_commitment_in, None, None).await?);
+        let proof_position = Some(
+            swap_client
+                .fetch_merkle_path(position_commitment_in, None, None)
+                .await?,
+        );
         let insert_proof_position = if new_position_commitment != Felt::ZERO {
             Some(swap_client.fetch_position_insertion_path().await?)
         } else {
@@ -744,10 +951,14 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let sqrt_price_start = pool_state.sqrt_price;
         let tick_start = pool_state.tick;
         let liquidity_before = pool_state.liquidity;
-        let fee_growth_global_0_before =
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1);
-        let fee_growth_global_1_before =
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1);
+        let fee_growth_global_0_before = U256::from_words(
+            pool_state.fee_growth_global_0.0,
+            pool_state.fee_growth_global_0.1,
+        );
+        let fee_growth_global_1_before = U256::from_words(
+            pool_state.fee_growth_global_1.0,
+            pool_state.fee_growth_global_1.1,
+        );
         let (sqrt_ratio_lower, sqrt_ratio_upper) = fetch_tick_sqrt_ratios(
             &swap_client,
             position_note.tick_lower,
@@ -807,7 +1018,11 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let root_token1 = fetch_latest_root(&swap_client, pool_config.token1).await?;
         let root_position = fetch_position_root(&swap_client, position_commitment_in).await?;
 
-        let proof_position = Some(swap_client.fetch_merkle_path(position_commitment_in, None, None).await?);
+        let proof_position = Some(
+            swap_client
+                .fetch_merkle_path(position_commitment_in, None, None)
+                .await?,
+        );
         let insert_proof_position = Some(swap_client.fetch_position_insertion_path().await?);
         let output_proof_token0 = if output_note_token0.is_some() {
             Some(swap_client.fetch_insertion_path(pool_config.token0).await?)
@@ -885,13 +1100,69 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
     }
 }
 
+fn input_token_id(zero_for_one: bool) -> u8 {
+    if zero_for_one {
+        0
+    } else {
+        1
+    }
+}
+
+async fn wait_for_note_indexed<A: ConnectedAccount + Sync>(
+    swap_client: &SwapClient<A>,
+    note: &Note,
+    token_id: u8,
+) -> Result<(), ClientError> {
+    let commitment = compute_commitment(note, token_id)?;
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        match swap_client.fetch_merkle_path(commitment, None, None).await {
+            Ok(_) => return Ok(()),
+            Err(_) if attempt < CHUNK_POLL_MAX_ATTEMPTS => {}
+            Err(err) => return Err(err),
+        }
+
+        sleep(Duration::from_millis(CHUNK_POLL_DELAY_MS)).await;
+    }
+}
+
+async fn chunk_can_progress<A: ConnectedAccount + Sync>(
+    swap_client: &SwapClient<A>,
+    notes: &[Note],
+    zero_for_one: bool,
+    sqrt_ratio_limit: U256,
+) -> Result<bool, ClientError> {
+    let amount_in = sum_note_amounts(notes)?;
+    if amount_in == 0 {
+        return Ok(false);
+    }
+
+    let quote = swap_client
+        .quote_swap_steps(SwapQuoteRequest {
+            amount: SignedAmount {
+                mag: amount_in,
+                sign: false,
+            },
+            is_token1: !zero_for_one,
+            sqrt_ratio_limit,
+            skip_ahead: 0,
+        })
+        .await?;
+    let (_step_amount_in, _step_amount_out, _amount_out_total, amount_in_consumed) =
+        summarize_swap_amounts(&quote.steps)?;
+    Ok(amount_in_consumed > 0)
+}
+
 fn resolve_swap_tokens(
     notes: &[Note],
     pool_config: &PoolConfig,
     zero_for_one: bool,
 ) -> Result<(u8, Felt, Felt), ClientError> {
     if notes.is_empty() {
-        return Err(ClientError::InvalidInput("notes cannot be empty".to_string()));
+        return Err(ClientError::InvalidInput(
+            "notes cannot be empty".to_string(),
+        ));
     }
     let token_id_in = token_id_from_note(notes[0].token, pool_config)?;
     for note in &notes[1..] {
@@ -931,7 +1202,9 @@ fn token_id_from_note(token: Felt, config: &PoolConfig) -> Result<u8, ClientErro
     } else if token == config.token1 {
         Ok(1)
     } else {
-        Err(ClientError::InvalidInput("note token not in pool".to_string()))
+        Err(ClientError::InvalidInput(
+            "note token not in pool".to_string(),
+        ))
     }
 }
 
@@ -940,6 +1213,20 @@ fn default_sqrt_ratio_limit(config: &PoolConfig, zero_for_one: bool) -> U256 {
         config.min_sqrt_ratio
     } else {
         config.max_sqrt_ratio
+    }
+}
+
+fn effective_step_limit(sqrt_price_end: U256, step_limit: U256, zero_for_one: bool) -> U256 {
+    if zero_for_one {
+        if sqrt_price_end > step_limit {
+            sqrt_price_end
+        } else {
+            step_limit
+        }
+    } else if sqrt_price_end < step_limit {
+        sqrt_price_end
+    } else {
+        step_limit
     }
 }
 
@@ -976,17 +1263,7 @@ fn summarize_swap_amounts(
 fn compute_is_limited(quote: &SwapStepsQuote, zero_for_one: bool) -> bool {
     let sqrt_price_end = quote.sqrt_price_end;
     for step in &quote.steps {
-        let step_limit = if zero_for_one {
-            if sqrt_price_end > step.sqrt_price_limit {
-                sqrt_price_end
-            } else {
-                step.sqrt_price_limit
-            }
-        } else if sqrt_price_end < step.sqrt_price_limit {
-            sqrt_price_end
-        } else {
-            step.sqrt_price_limit
-        };
+        let step_limit = effective_step_limit(sqrt_price_end, step.sqrt_price_limit, zero_for_one);
         if step.sqrt_price_next == step_limit {
             return true;
         }
@@ -1005,7 +1282,9 @@ fn maybe_truncate_quote_for_zero_liquidity(
         return Ok(None);
     }
     if step_liquidity.len() != quote.steps.len() {
-        return Err(ClientError::InvalidInput("step liquidity length mismatch".to_string()));
+        return Err(ClientError::InvalidInput(
+            "step liquidity length mismatch".to_string(),
+        ));
     }
 
     let mut remaining = remaining_start;
@@ -1030,11 +1309,10 @@ fn maybe_truncate_quote_for_zero_liquidity(
             } else {
                 adjusted.steps[idx - 1].fee_growth_global_1
             };
-            let template = adjusted
-                .steps
-                .get(idx)
-                .cloned()
-                .ok_or_else(|| ClientError::InvalidInput("halt step out of range".to_string()))?;
+            let template =
+                adjusted.steps.get(idx).cloned().ok_or_else(|| {
+                    ClientError::InvalidInput("halt step out of range".to_string())
+                })?;
 
             for step_mut in adjusted.steps.iter_mut().skip(idx) {
                 step_mut.sqrt_price_next = sqrt_price_end;
@@ -1054,7 +1332,11 @@ fn maybe_truncate_quote_for_zero_liquidity(
             adjusted.is_limited = compute_is_limited(&adjusted, zero_for_one);
             return Ok(Some(adjusted));
         }
-        let consumed = if exact_out { step.amount_out } else { step.amount_in };
+        let consumed = if exact_out {
+            step.amount_out
+        } else {
+            step.amount_in
+        };
         remaining = remaining
             .checked_sub(consumed)
             .ok_or_else(|| ClientError::InvalidInput("swap remaining underflow".to_string()))?;
@@ -1076,13 +1358,13 @@ async fn compute_step_liquidity<A: ConnectedAccount + Sync>(
             let (sign, mag) = decode_signed_u256(step.liquidity_net)?;
             if zero_for_one {
                 if sign {
-                    liquidity = liquidity
-                        .checked_add(mag)
-                        .ok_or_else(|| ClientError::InvalidInput("liquidity overflow".to_string()))?;
+                    liquidity = liquidity.checked_add(mag).ok_or_else(|| {
+                        ClientError::InvalidInput("liquidity overflow".to_string())
+                    })?;
                 } else {
-                    liquidity = liquidity
-                        .checked_sub(mag)
-                        .ok_or_else(|| ClientError::InvalidInput("liquidity underflow".to_string()))?;
+                    liquidity = liquidity.checked_sub(mag).ok_or_else(|| {
+                        ClientError::InvalidInput("liquidity underflow".to_string())
+                    })?;
                 }
             } else if sign {
                 liquidity = liquidity
@@ -1109,7 +1391,9 @@ fn build_output_note(
     }
     if let Some(note) = note {
         if note.amount != amount {
-            return Err(ClientError::InvalidInput("note amount mismatch".to_string()));
+            return Err(ClientError::InvalidInput(
+                "note amount mismatch".to_string(),
+            ));
         }
         if note.token != token {
             return Err(ClientError::InvalidInput("note token mismatch".to_string()));
@@ -1156,7 +1440,9 @@ async fn fetch_input_proofs<A: ConnectedAccount + Sync>(
     let mut merkle_root = Felt::ZERO;
     for (idx, note) in notes.iter().enumerate() {
         let commitment = compute_commitment(note, token_id)?;
-        let proof = swap_client.fetch_merkle_path(commitment, None, None).await?;
+        let proof = swap_client
+            .fetch_merkle_path(commitment, None, None)
+            .await?;
         if idx == 0 {
             merkle_root = proof.root;
         } else if proof.root != merkle_root {
@@ -1184,7 +1470,10 @@ async fn fetch_latest_root<A: ConnectedAccount + Sync>(
         .await
         .map_err(|err| ClientError::Asp(err.to_string()))?;
     if !response.status().is_success() {
-        return Err(ClientError::Asp(format!("asp root error: {}", response.status())));
+        return Err(ClientError::Asp(format!(
+            "asp root error: {}",
+            response.status()
+        )));
     }
     let body: RootAtResponse = response.json().await.map_err(ClientError::from)?;
     if body.token != token_label {
@@ -1199,7 +1488,9 @@ async fn fetch_position_root<A: ConnectedAccount + Sync>(
     position_commitment: Felt,
 ) -> Result<Felt, ClientError> {
     if position_commitment != Felt::ZERO {
-        let proof = swap_client.fetch_merkle_path(position_commitment, None, None).await?;
+        let proof = swap_client
+            .fetch_merkle_path(position_commitment, None, None)
+            .await?;
         Ok(proof.root)
     } else {
         let url = format!(
@@ -1213,7 +1504,10 @@ async fn fetch_position_root<A: ConnectedAccount + Sync>(
             .await
             .map_err(|err| ClientError::Asp(err.to_string()))?;
         if !response.status().is_success() {
-            return Err(ClientError::Asp(format!("asp root error: {}", response.status())));
+            return Err(ClientError::Asp(format!(
+                "asp root error: {}",
+                response.status()
+            )));
         }
         let body: RootAtResponse = response.json().await.map_err(ClientError::from)?;
         if body.token != "position" {
@@ -1223,6 +1517,7 @@ async fn fetch_position_root<A: ConnectedAccount + Sync>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_swap_witness_exact_in(
     request: &SwapProveRequest,
     output_note: &Option<Note>,
@@ -1234,7 +1529,7 @@ fn build_swap_witness_exact_in(
     output_commitment: Felt,
     change_commitment: Felt,
 ) -> Result<SwapWitnessInputs, ClientError> {
-    let max_steps = generated_constants::MAX_SWAP_STEPS;
+    let max_steps = quote.steps.len();
     let max_notes = generated_constants::MAX_INPUT_NOTES;
 
     let total_amount_in = sum_note_amounts(&request.notes)?;
@@ -1256,7 +1551,12 @@ fn build_swap_witness_exact_in(
     for (idx, step) in quote.steps.iter().enumerate() {
         let amount_step = if halted { 0 } else { amount_remaining };
         let liquidity = step_liquidity[idx];
-        let sqrt_limit = u256_to_big(&step.sqrt_price_limit);
+        let step_limit = effective_step_limit(
+            quote.sqrt_price_end,
+            step.sqrt_price_limit,
+            request.zero_for_one,
+        );
+        let sqrt_limit = u256_to_big(&step_limit);
         let (div_before_fee, amt0_limit, amt0_calc, amt0_out, next0_floor, next0_ceil, next1_floor) =
             compute_swap_divs_exact_in(
                 sqrt_price_start.clone(),
@@ -1287,7 +1587,7 @@ fn build_swap_witness_exact_in(
     }
 
     let (token_id_in, input_token, output_token) =
-        resolve_swap_tokens(&request.notes, &pool_config, request.zero_for_one)?;
+        resolve_swap_tokens(&request.notes, pool_config, request.zero_for_one)?;
     let (commitment_in, nullifier, note_count, commitment_extra, nullifier_extra) =
         build_note_public_inputs(&request.notes, token_id_in, max_notes)?;
 
@@ -1295,19 +1595,30 @@ fn build_swap_witness_exact_in(
     let pad_output_note =
         generate_note_with_token_id(PAD_NOTE_AMOUNT, output_token, 1 - token_id_in)?;
     let secret_in: Vec<[u8; 32]> = pad_note_bytes(
-        &request.notes.iter().map(|note| note.secret).collect::<Vec<_>>(),
+        &request
+            .notes
+            .iter()
+            .map(|note| note.secret)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_input_note.secret,
     );
     let nullifier_seed_in: Vec<[u8; 32]> = pad_note_bytes(
-        &request.notes.iter().map(|note| note.nullifier).collect::<Vec<_>>(),
+        &request
+            .notes
+            .iter()
+            .map(|note| note.nullifier)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_input_note.nullifier,
     );
     let note_amount_in = pad_note_amounts(&request.notes, max_notes);
 
     let mut values = HashMap::new();
-    values.insert("tag".to_string(), WitnessValue::Scalar(VK_SWAP_DEC.to_string()));
+    values.insert(
+        "tag".to_string(),
+        WitnessValue::Scalar(VK_SWAP_DEC.to_string()),
+    );
     values.insert(
         "merkle_root".to_string(),
         WitnessValue::Scalar(felt_to_decimal(*merkle_root)),
@@ -1324,15 +1635,22 @@ fn build_swap_witness_exact_in(
         "sqrt_price_end_public".to_string(),
         WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.sqrt_price_end))),
     );
-    values.insert("liquidity_before".to_string(), WitnessValue::U128(quote.liquidity_start));
+    values.insert(
+        "liquidity_before".to_string(),
+        WitnessValue::U128(quote.liquidity_start),
+    );
     values.insert("fee".to_string(), WitnessValue::U128(pool_config.fee));
     values.insert(
         "fee_growth_global_0_before".to_string(),
-        WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.fee_growth_global_0_before))),
+        WitnessValue::Scalar(big_to_decimal(&u256_to_big(
+            &quote.fee_growth_global_0_before,
+        ))),
     );
     values.insert(
         "fee_growth_global_1_before".to_string(),
-        WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.fee_growth_global_1_before))),
+        WitnessValue::Scalar(big_to_decimal(&u256_to_big(
+            &quote.fee_growth_global_1_before,
+        ))),
     );
     values.insert(
         "output_commitment".to_string(),
@@ -1342,15 +1660,33 @@ fn build_swap_witness_exact_in(
         "change_commitment".to_string(),
         WitnessValue::Scalar(felt_to_decimal(change_commitment)),
     );
-    values.insert("is_limited".to_string(), WitnessValue::Bool(quote.is_limited));
-    values.insert("zero_for_one".to_string(), WitnessValue::Bool(request.zero_for_one));
+    values.insert(
+        "is_limited".to_string(),
+        WitnessValue::Bool(quote.is_limited),
+    );
+    values.insert(
+        "zero_for_one".to_string(),
+        WitnessValue::Bool(request.zero_for_one),
+    );
     values.insert(
         "step_sqrt_price_next".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.sqrt_price_next).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.sqrt_price_next)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_sqrt_price_limit".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.sqrt_price_limit).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.sqrt_price_limit)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_tick_next".to_string(),
@@ -1358,21 +1694,42 @@ fn build_swap_witness_exact_in(
     );
     values.insert(
         "step_liquidity_net".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.liquidity_net).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.liquidity_net)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_fee_growth_global_0".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.fee_growth_global_0).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.fee_growth_global_0)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_fee_growth_global_1".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.fee_growth_global_1).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.fee_growth_global_1)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "commitment_in".to_string(),
         WitnessValue::Scalar(felt_to_decimal(commitment_in)),
     );
-    values.insert("token_id_in".to_string(), WitnessValue::U128(token_id_in as u128));
+    values.insert(
+        "token_id_in".to_string(),
+        WitnessValue::U128(token_id_in as u128),
+    );
     values.insert("note_count".to_string(), WitnessValue::U128(note_count));
     values.insert(
         "nullifier_extra".to_string(),
@@ -1418,10 +1775,19 @@ fn build_swap_witness_exact_in(
         "step_next1_div_floor_q".to_string(),
         WitnessValue::MatrixU128(step_next1_div_floor_q),
     );
-    values.insert("step_fee_div_q".to_string(), WitnessValue::MatrixU128(step_fee_div_q));
-    values.insert("note_amount_in".to_string(), WitnessValue::VecU128(note_amount_in));
+    values.insert(
+        "step_fee_div_q".to_string(),
+        WitnessValue::MatrixU128(step_fee_div_q),
+    );
+    values.insert(
+        "note_amount_in".to_string(),
+        WitnessValue::VecU128(note_amount_in),
+    );
     values.insert("secret_in".to_string(), WitnessValue::VecBytes32(secret_in));
-    values.insert("nullifier_seed_in".to_string(), WitnessValue::VecBytes32(nullifier_seed_in));
+    values.insert(
+        "nullifier_seed_in".to_string(),
+        WitnessValue::VecBytes32(nullifier_seed_in),
+    );
     values.insert(
         "secret_out".to_string(),
         WitnessValue::Bytes32(
@@ -1458,11 +1824,15 @@ fn build_swap_witness_exact_in(
                 .unwrap_or(pad_input_note.nullifier),
         ),
     );
-    values.insert("tick_spacing".to_string(), WitnessValue::U128(pool_config.tick_spacing));
+    values.insert(
+        "tick_spacing".to_string(),
+        WitnessValue::U128(pool_config.tick_spacing),
+    );
 
     Ok(SwapWitnessInputs { values })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_swap_witness_exact_out(
     request: &SwapProveRequest,
     output_note: &Option<Note>,
@@ -1475,7 +1845,7 @@ fn build_swap_witness_exact_out(
     change_commitment: Felt,
     amount_out_total: u128,
 ) -> Result<SwapWitnessInputs, ClientError> {
-    let max_steps = generated_constants::MAX_SWAP_STEPS;
+    let max_steps = quote.steps.len();
     let max_notes = generated_constants::MAX_INPUT_NOTES;
     let (step_amount_in, step_amount_out, _amount_out_total, _amount_in_consumed) =
         summarize_swap_amounts(&quote.steps)?;
@@ -1494,22 +1864,21 @@ fn build_swap_witness_exact_out(
     for (idx, step) in quote.steps.iter().enumerate() {
         let amount_step = if halted { 0 } else { amount_remaining };
         let liquidity = step_liquidity[idx];
-        let sqrt_limit = u256_to_big(&step.sqrt_price_limit);
-        let (
-            div_before_fee,
-            amt0_limit,
-            amt0_calc,
-            amt0_out,
-            next0_ceil,
-            next1_floor,
-        ) = compute_swap_divs_exact_out(
-            sqrt_price_start.clone(),
-            sqrt_limit,
-            liquidity,
-            amount_step,
-            pool_config.fee,
+        let step_limit = effective_step_limit(
+            quote.sqrt_price_end,
+            step.sqrt_price_limit,
             request.zero_for_one,
-        )?;
+        );
+        let sqrt_limit = u256_to_big(&step_limit);
+        let (div_before_fee, amt0_limit, amt0_calc, amt0_out, next0_ceil, next1_floor) =
+            compute_swap_divs_exact_out(
+                sqrt_price_start.clone(),
+                sqrt_limit,
+                liquidity,
+                amount_step,
+                pool_config.fee,
+                request.zero_for_one,
+            )?;
         step_amount_before_fee_div_q.push(div_before_fee);
         step_amount0_limit_div_q.push(amt0_limit);
         step_amount0_calc_div_q.push(amt0_calc);
@@ -1530,7 +1899,7 @@ fn build_swap_witness_exact_out(
     }
 
     let (token_id_in, input_token, output_token) =
-        resolve_swap_tokens(&request.notes, &pool_config, request.zero_for_one)?;
+        resolve_swap_tokens(&request.notes, pool_config, request.zero_for_one)?;
     let (commitment_in, nullifier, note_count, commitment_extra, nullifier_extra) =
         build_note_public_inputs(&request.notes, token_id_in, max_notes)?;
 
@@ -1538,19 +1907,30 @@ fn build_swap_witness_exact_out(
     let pad_output_note =
         generate_note_with_token_id(PAD_NOTE_AMOUNT, output_token, 1 - token_id_in)?;
     let secret_in: Vec<[u8; 32]> = pad_note_bytes(
-        &request.notes.iter().map(|note| note.secret).collect::<Vec<_>>(),
+        &request
+            .notes
+            .iter()
+            .map(|note| note.secret)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_input_note.secret,
     );
     let nullifier_seed_in: Vec<[u8; 32]> = pad_note_bytes(
-        &request.notes.iter().map(|note| note.nullifier).collect::<Vec<_>>(),
+        &request
+            .notes
+            .iter()
+            .map(|note| note.nullifier)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_input_note.nullifier,
     );
     let note_amount_in = pad_note_amounts(&request.notes, max_notes);
 
     let mut values = HashMap::new();
-    values.insert("tag".to_string(), WitnessValue::Scalar(VK_SWAP_EXACT_OUT_DEC.to_string()));
+    values.insert(
+        "tag".to_string(),
+        WitnessValue::Scalar(VK_SWAP_EXACT_OUT_DEC.to_string()),
+    );
     values.insert(
         "merkle_root".to_string(),
         WitnessValue::Scalar(felt_to_decimal(*merkle_root)),
@@ -1567,15 +1947,22 @@ fn build_swap_witness_exact_out(
         "sqrt_price_end_public".to_string(),
         WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.sqrt_price_end))),
     );
-    values.insert("liquidity_before".to_string(), WitnessValue::U128(quote.liquidity_start));
+    values.insert(
+        "liquidity_before".to_string(),
+        WitnessValue::U128(quote.liquidity_start),
+    );
     values.insert("fee".to_string(), WitnessValue::U128(pool_config.fee));
     values.insert(
         "fee_growth_global_0_before".to_string(),
-        WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.fee_growth_global_0_before))),
+        WitnessValue::Scalar(big_to_decimal(&u256_to_big(
+            &quote.fee_growth_global_0_before,
+        ))),
     );
     values.insert(
         "fee_growth_global_1_before".to_string(),
-        WitnessValue::Scalar(big_to_decimal(&u256_to_big(&quote.fee_growth_global_1_before))),
+        WitnessValue::Scalar(big_to_decimal(&u256_to_big(
+            &quote.fee_growth_global_1_before,
+        ))),
     );
     values.insert(
         "output_commitment".to_string(),
@@ -1585,15 +1972,33 @@ fn build_swap_witness_exact_out(
         "change_commitment".to_string(),
         WitnessValue::Scalar(felt_to_decimal(change_commitment)),
     );
-    values.insert("is_limited".to_string(), WitnessValue::Bool(quote.is_limited));
-    values.insert("zero_for_one".to_string(), WitnessValue::Bool(request.zero_for_one));
+    values.insert(
+        "is_limited".to_string(),
+        WitnessValue::Bool(quote.is_limited),
+    );
+    values.insert(
+        "zero_for_one".to_string(),
+        WitnessValue::Bool(request.zero_for_one),
+    );
     values.insert(
         "step_sqrt_price_next".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.sqrt_price_next).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.sqrt_price_next)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_sqrt_price_limit".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.sqrt_price_limit).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.sqrt_price_limit)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_tick_next".to_string(),
@@ -1601,21 +2006,42 @@ fn build_swap_witness_exact_out(
     );
     values.insert(
         "step_liquidity_net".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.liquidity_net).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.liquidity_net)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_fee_growth_global_0".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.fee_growth_global_0).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.fee_growth_global_0)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "step_fee_growth_global_1".to_string(),
-        WitnessValue::Raw(u256_array_to_json(&quote.steps.iter().map(|s| s.fee_growth_global_1).collect::<Vec<_>>())),
+        WitnessValue::Raw(u256_array_to_json(
+            &quote
+                .steps
+                .iter()
+                .map(|s| s.fee_growth_global_1)
+                .collect::<Vec<_>>(),
+        )),
     );
     values.insert(
         "commitment_in".to_string(),
         WitnessValue::Scalar(felt_to_decimal(commitment_in)),
     );
-    values.insert("token_id_in".to_string(), WitnessValue::U128(token_id_in as u128));
+    values.insert(
+        "token_id_in".to_string(),
+        WitnessValue::U128(token_id_in as u128),
+    );
     values.insert("note_count".to_string(), WitnessValue::U128(note_count));
     values.insert(
         "nullifier_extra".to_string(),
@@ -1657,10 +2083,19 @@ fn build_swap_witness_exact_out(
         "step_next1_div_floor_q".to_string(),
         WitnessValue::MatrixU128(step_next1_div_floor_q),
     );
-    values.insert("step_fee_div_q".to_string(), WitnessValue::MatrixU128(step_fee_div_q));
-    values.insert("note_amount_in".to_string(), WitnessValue::VecU128(note_amount_in));
+    values.insert(
+        "step_fee_div_q".to_string(),
+        WitnessValue::MatrixU128(step_fee_div_q),
+    );
+    values.insert(
+        "note_amount_in".to_string(),
+        WitnessValue::VecU128(note_amount_in),
+    );
     values.insert("secret_in".to_string(), WitnessValue::VecBytes32(secret_in));
-    values.insert("nullifier_seed_in".to_string(), WitnessValue::VecBytes32(nullifier_seed_in));
+    values.insert(
+        "nullifier_seed_in".to_string(),
+        WitnessValue::VecBytes32(nullifier_seed_in),
+    );
     values.insert(
         "secret_out".to_string(),
         WitnessValue::Bytes32(
@@ -1697,11 +2132,15 @@ fn build_swap_witness_exact_out(
                 .unwrap_or(pad_input_note.nullifier),
         ),
     );
-    values.insert("tick_spacing".to_string(), WitnessValue::U128(pool_config.tick_spacing));
+    values.insert(
+        "tick_spacing".to_string(),
+        WitnessValue::U128(pool_config.tick_spacing),
+    );
 
     Ok(SwapWitnessInputs { values })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_liquidity_witness(
     pool_config: &PoolConfig,
     tag_dec: &str,
@@ -1745,37 +2184,57 @@ fn build_liquidity_witness(
     amount0_inside_div_q: Vec<Vec<u128>>,
 ) -> Result<LpWitnessInputs, ClientError> {
     let max_notes = generated_constants::MAX_INPUT_NOTES;
-    let (token0_commitment, token0_nullifier, token0_count, token0_commitment_extra, token0_nullifier_extra) =
-        build_note_public_inputs(token0_notes, 0, max_notes)?;
-    let (token1_commitment, token1_nullifier, token1_count, token1_commitment_extra, token1_nullifier_extra) =
-        build_note_public_inputs(token1_notes, 1, max_notes)?;
+    let (
+        token0_commitment,
+        token0_nullifier,
+        token0_count,
+        token0_commitment_extra,
+        token0_nullifier_extra,
+    ) = build_note_public_inputs(token0_notes, 0, max_notes)?;
+    let (
+        token1_commitment,
+        token1_nullifier,
+        token1_count,
+        token1_commitment_extra,
+        token1_nullifier_extra,
+    ) = build_note_public_inputs(token1_notes, 1, max_notes)?;
 
     let pad_token0_note = generate_note_with_token_id(PAD_NOTE_AMOUNT, pool_config.token0, 0)?;
     let pad_token1_note = generate_note_with_token_id(PAD_NOTE_AMOUNT, pool_config.token1, 1)?;
     let token0_amounts = pad_note_amounts(token0_notes, max_notes);
     let token1_amounts = pad_note_amounts(token1_notes, max_notes);
     let token0_secrets = pad_note_bytes(
-        &token0_notes.iter().map(|note| note.secret).collect::<Vec<_>>(),
+        &token0_notes
+            .iter()
+            .map(|note| note.secret)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_token0_note.secret,
     );
     let token1_secrets = pad_note_bytes(
-        &token1_notes.iter().map(|note| note.secret).collect::<Vec<_>>(),
+        &token1_notes
+            .iter()
+            .map(|note| note.secret)
+            .collect::<Vec<_>>(),
         max_notes,
         pad_token1_note.secret,
     );
-    let token0_nullifier_seeds =
-        pad_note_bytes(
-            &token0_notes.iter().map(|note| note.nullifier).collect::<Vec<_>>(),
-            max_notes,
-            pad_token0_note.nullifier,
-        );
-    let token1_nullifier_seeds =
-        pad_note_bytes(
-            &token1_notes.iter().map(|note| note.nullifier).collect::<Vec<_>>(),
-            max_notes,
-            pad_token1_note.nullifier,
-        );
+    let token0_nullifier_seeds = pad_note_bytes(
+        &token0_notes
+            .iter()
+            .map(|note| note.nullifier)
+            .collect::<Vec<_>>(),
+        max_notes,
+        pad_token0_note.nullifier,
+    );
+    let token1_nullifier_seeds = pad_note_bytes(
+        &token1_notes
+            .iter()
+            .map(|note| note.nullifier)
+            .collect::<Vec<_>>(),
+        max_notes,
+        pad_token1_note.nullifier,
+    );
 
     let liquidity_delta_value = if is_add {
         encode_signed_u256(liquidity_delta as i128)?
@@ -1822,7 +2281,10 @@ fn build_liquidity_witness(
         "sqrt_ratio_upper".to_string(),
         WitnessValue::Scalar(big_to_decimal(&u256_to_big(&sqrt_ratio_upper))),
     );
-    values.insert("liquidity_before".to_string(), WitnessValue::U128(liquidity_before));
+    values.insert(
+        "liquidity_before".to_string(),
+        WitnessValue::U128(liquidity_before),
+    );
     values.insert(
         "liquidity_delta".to_string(),
         WitnessValue::Scalar(big_to_decimal(&u256_to_big(&liquidity_delta_value))),
@@ -1896,10 +2358,22 @@ fn build_liquidity_witness(
         "output_commitment_token1".to_string(),
         WitnessValue::Scalar(felt_to_decimal(output_commitment_token1)),
     );
-    values.insert("protocol_fee_0".to_string(), WitnessValue::U128(protocol_fee_0));
-    values.insert("protocol_fee_1".to_string(), WitnessValue::U128(protocol_fee_1));
-    values.insert("token0_note_count".to_string(), WitnessValue::U128(token0_count));
-    values.insert("token1_note_count".to_string(), WitnessValue::U128(token1_count));
+    values.insert(
+        "protocol_fee_0".to_string(),
+        WitnessValue::U128(protocol_fee_0),
+    );
+    values.insert(
+        "protocol_fee_1".to_string(),
+        WitnessValue::U128(protocol_fee_1),
+    );
+    values.insert(
+        "token0_note_count".to_string(),
+        WitnessValue::U128(token0_count),
+    );
+    values.insert(
+        "token1_note_count".to_string(),
+        WitnessValue::U128(token1_count),
+    );
     values.insert(
         "nullifier_token0_extra".to_string(),
         WitnessValue::Raw(felt_array_to_json(&token0_nullifier_extra)),
@@ -1917,19 +2391,34 @@ fn build_liquidity_witness(
         WitnessValue::Raw(felt_array_to_json(&token1_commitment_extra)),
     );
 
-    values.insert("token0_note_amount".to_string(), WitnessValue::VecU128(token0_amounts));
-    values.insert("token0_note_secret".to_string(), WitnessValue::VecBytes32(token0_secrets));
+    values.insert(
+        "token0_note_amount".to_string(),
+        WitnessValue::VecU128(token0_amounts),
+    );
+    values.insert(
+        "token0_note_secret".to_string(),
+        WitnessValue::VecBytes32(token0_secrets),
+    );
     values.insert(
         "token0_note_nullifier_seed".to_string(),
         WitnessValue::VecBytes32(token0_nullifier_seeds),
     );
-    values.insert("token1_note_amount".to_string(), WitnessValue::VecU128(token1_amounts));
-    values.insert("token1_note_secret".to_string(), WitnessValue::VecBytes32(token1_secrets));
+    values.insert(
+        "token1_note_amount".to_string(),
+        WitnessValue::VecU128(token1_amounts),
+    );
+    values.insert(
+        "token1_note_secret".to_string(),
+        WitnessValue::VecBytes32(token1_secrets),
+    );
     values.insert(
         "token1_note_nullifier_seed".to_string(),
         WitnessValue::VecBytes32(token1_nullifier_seeds),
     );
-    values.insert("position_liquidity".to_string(), WitnessValue::U128(position_liquidity));
+    values.insert(
+        "position_liquidity".to_string(),
+        WitnessValue::U128(position_liquidity),
+    );
     let (position_secret_in, position_nullifier_seed_in) =
         match (position_secret_in, position_nullifier_seed_in) {
             (Some(secret), Some(nullifier)) => (secret, nullifier),
@@ -1976,7 +2465,10 @@ fn build_liquidity_witness(
         "out_token1_nullifier_seed".to_string(),
         WitnessValue::Bytes32(out_token1_nullifier_seed.unwrap_or(pad_token1_note.nullifier)),
     );
-    values.insert("tick_spacing".to_string(), WitnessValue::U128(pool_config.tick_spacing));
+    values.insert(
+        "tick_spacing".to_string(),
+        WitnessValue::U128(pool_config.tick_spacing),
+    );
     values.insert(
         "amount0_below_div_q".to_string(),
         WitnessValue::MatrixU128(amount0_below_div_q),
@@ -1997,6 +2489,7 @@ fn build_liquidity_witness(
     Ok(LpWitnessInputs { values })
 }
 
+#[allow(clippy::type_complexity)]
 fn build_note_public_inputs(
     notes: &[Note],
     token_id: u8,
@@ -2057,6 +2550,7 @@ fn pad_note_bytes(values: &[[u8; 32]], max_notes: usize, pad_value: [u8; 32]) ->
     out
 }
 
+#[allow(clippy::type_complexity)]
 fn compute_swap_divs_exact_in(
     sqrt_price_start: BigUint,
     sqrt_price_limit: BigUint,
@@ -2064,7 +2558,18 @@ fn compute_swap_divs_exact_in(
     amount_remaining: u128,
     fee: u128,
     zero_for_one: bool,
-) -> Result<(Vec<u128>, Vec<Vec<u128>>, Vec<Vec<u128>>, Vec<Vec<u128>>, Vec<u128>, Vec<u128>, Vec<u128>), ClientError> {
+) -> Result<
+    (
+        Vec<u128>,
+        Vec<Vec<u128>>,
+        Vec<Vec<u128>>,
+        Vec<Vec<u128>>,
+        Vec<u128>,
+        Vec<u128>,
+        Vec<u128>,
+    ),
+    ClientError,
+> {
     let fee_amount = compute_fee(amount_remaining, fee);
     let price_impact = amount_remaining
         .checked_sub(fee_amount)
@@ -2080,8 +2585,16 @@ fn compute_swap_divs_exact_in(
     let amt0_calc = amount0_delta_with_q(&sqrt_price_limit, &sqrt_price_start, liquidity, false)?;
     let amt1_limit = amount1_delta(&sqrt_price_limit, &sqrt_price_start, liquidity, false)?;
     let amt1_calc = amount1_delta(&sqrt_price_limit, &sqrt_price_start, liquidity, true)?;
-    let specified_amount_delta = if zero_for_one { amt0_limit.amount } else { amt1_calc };
-    let _calculated_amount_delta = if zero_for_one { amt1_limit } else { amt0_calc.amount };
+    let specified_amount_delta = if zero_for_one {
+        amt0_limit.amount
+    } else {
+        amt1_calc
+    };
+    let _calculated_amount_delta = if zero_for_one {
+        amt1_limit
+    } else {
+        amt0_calc.amount
+    };
 
     let (before_fee_q, _before_fee) = amount_before_fee_div_q(specified_amount_delta, fee)?;
     let amt0_out = amount0_delta_with_q(&next_from_amount, &sqrt_price_start, liquidity, false)?;
@@ -2097,6 +2610,7 @@ fn compute_swap_divs_exact_in(
     ))
 }
 
+#[allow(clippy::type_complexity)]
 fn compute_swap_divs_exact_out(
     sqrt_price_start: BigUint,
     sqrt_price_limit: BigUint,
@@ -2104,19 +2618,37 @@ fn compute_swap_divs_exact_out(
     amount_remaining: u128,
     fee: u128,
     zero_for_one: bool,
-) -> Result<(Vec<u128>, Vec<Vec<u128>>, Vec<Vec<u128>>, Vec<Vec<u128>>, Vec<u128>, Vec<u128>), ClientError> {
+) -> Result<
+    (
+        Vec<u128>,
+        Vec<Vec<u128>>,
+        Vec<Vec<u128>>,
+        Vec<Vec<u128>>,
+        Vec<u128>,
+        Vec<u128>,
+    ),
+    ClientError,
+> {
     let (next0, next0_ceil) =
         next_sqrt_ratio_from_amount0_exact_out(&sqrt_price_start, liquidity, amount_remaining)?;
     let (next1, next1_floor) =
         next_sqrt_ratio_from_amount1_exact_out(&sqrt_price_start, liquidity, amount_remaining)?;
-    let next_from_amount = if zero_for_one { next0 } else { next1 };
+    let next_from_amount = if zero_for_one { next1 } else { next0 };
 
     let amt0_limit = amount0_delta_with_q(&sqrt_price_limit, &sqrt_price_start, liquidity, true)?;
     let amt0_calc = amount0_delta_with_q(&sqrt_price_limit, &sqrt_price_start, liquidity, false)?;
     let amt1_limit = amount1_delta(&sqrt_price_limit, &sqrt_price_start, liquidity, false)?;
     let amt1_calc = amount1_delta(&sqrt_price_limit, &sqrt_price_start, liquidity, true)?;
-    let _specified_amount_delta = if zero_for_one { amt1_limit } else { amt0_limit.amount };
-    let calculated_amount_delta = if zero_for_one { amt0_calc.amount } else { amt1_calc };
+    let _specified_amount_delta = if zero_for_one {
+        amt1_limit
+    } else {
+        amt0_limit.amount
+    };
+    let calculated_amount_delta = if zero_for_one {
+        amt0_calc.amount
+    } else {
+        amt1_calc
+    };
 
     let limited = if zero_for_one {
         next_from_amount < sqrt_price_limit
@@ -2126,7 +2658,11 @@ fn compute_swap_divs_exact_out(
 
     let amt0_in = amount0_delta_with_q(&next_from_amount, &sqrt_price_start, liquidity, true)?;
     let amt1_in = amount1_delta(&next_from_amount, &sqrt_price_start, liquidity, true)?;
-    let nl_amount_in_wo_fee = if zero_for_one { amt0_in.amount } else { amt1_in };
+    let nl_amount_in_wo_fee = if zero_for_one {
+        amt0_in.amount
+    } else {
+        amt1_in
+    };
     let calc_amount_for_fee = if limited {
         calculated_amount_delta
     } else {
@@ -2206,10 +2742,18 @@ fn amount0_delta_with_q(
     let mul = &numerator1 * &delta;
     let q_floor = &mul / &upper;
     let q_ceil = div_ceil(&mul, &upper);
-    let mid = if round_up { q_ceil.clone() } else { q_floor.clone() };
+    let mid = if round_up {
+        q_ceil.clone()
+    } else {
+        q_floor.clone()
+    };
     let q2_floor = &mid / &lower;
     let q2_ceil = div_ceil(&mid, &lower);
-    let amount = if round_up { q2_ceil.clone() } else { q2_floor.clone() };
+    let amount = if round_up {
+        q2_ceil.clone()
+    } else {
+        q2_floor.clone()
+    };
     let amount_u128 = amount
         .to_u128()
         .ok_or_else(|| ClientError::InvalidInput("amount0 overflow".to_string()))?;
@@ -2257,9 +2801,18 @@ fn next_sqrt_ratio_from_amount0(
     let numerator1 = BigUint::from(liquidity) << 128u32;
     let denom_p1 = &numerator1 / sqrt_ratio;
     let denom_add = &denom_p1 + BigUint::from(amount);
-    let denom_add2 = &denom_add + if amount == 0 { BigUint::one() } else { BigUint::zero() };
+    let denom_add2 = &denom_add
+        + if amount == 0 {
+            BigUint::one()
+        } else {
+            BigUint::zero()
+        };
     let q_ceil = div_ceil(&numerator1, &denom_add2);
-    let next_ratio = if amount == 0 { sqrt_ratio.clone() } else { q_ceil.clone() };
+    let next_ratio = if amount == 0 {
+        sqrt_ratio.clone()
+    } else {
+        q_ceil.clone()
+    };
     Ok((next_ratio, big_to_limbs(&denom_p1)?, big_to_limbs(&q_ceil)?))
 }
 
@@ -2292,7 +2845,11 @@ fn next_sqrt_ratio_from_amount0_exact_out(
     let denom = &numerator1 - &prod;
     let numerator_mul = &numerator1 * sqrt_ratio;
     let q_ceil = div_ceil(&numerator_mul, &denom);
-    let next_ratio = if amount == 0 { sqrt_ratio.clone() } else { q_ceil.clone() };
+    let next_ratio = if amount == 0 {
+        sqrt_ratio.clone()
+    } else {
+        q_ceil.clone()
+    };
     Ok((next_ratio, big_to_limbs(&q_ceil)?))
 }
 
@@ -2303,15 +2860,26 @@ fn next_sqrt_ratio_from_amount1_exact_out(
 ) -> Result<(BigUint, Vec<u128>), ClientError> {
     let numerator = BigUint::from(amount) << 128u32;
     let safe_liq = if liquidity == 0 { 1u128 } else { liquidity };
-    let q_floor = &numerator / BigUint::from(safe_liq);
+    let safe_liq_big = BigUint::from(safe_liq);
+    let q_floor = &numerator / &safe_liq_big;
+    let rem_nonzero = (&numerator % &safe_liq_big) != BigUint::zero();
+    let sub_delta = if rem_nonzero {
+        q_floor.clone() + BigUint::one()
+    } else {
+        q_floor.clone()
+    };
     let next_ratio = if amount == 0 {
         sqrt_ratio.clone()
     } else {
-        sqrt_ratio - &q_floor
+        if sqrt_ratio < &sub_delta {
+            return Err(ClientError::InvalidInput("exact out underflow".to_string()));
+        }
+        sqrt_ratio - &sub_delta
     };
     Ok((next_ratio, big_to_limbs(&q_floor)?))
 }
 
+#[allow(clippy::type_complexity)]
 fn compute_liquidity_amounts(
     sqrt_price_start: U256,
     sqrt_ratio_lower: U256,
@@ -2419,11 +2987,21 @@ fn felt_to_decimal(value: Felt) -> String {
 }
 
 fn u256_array_to_json(values: &[U256]) -> Value {
-    Value::Array(values.iter().map(|value| Value::String(big_to_decimal(&u256_to_big(value)))).collect())
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String(big_to_decimal(&u256_to_big(value))))
+            .collect(),
+    )
 }
 
 fn felt_array_to_json(values: &[Felt]) -> Value {
-    Value::Array(values.iter().map(|value| Value::String(felt_to_decimal(*value))).collect())
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String(felt_to_decimal(*value)))
+            .collect(),
+    )
 }
 
 fn big_to_limbs(value: &BigUint) -> Result<Vec<u128>, ClientError> {
@@ -2486,29 +3064,16 @@ async fn fetch_sqrt_ratio_at_tick<A: ConnectedAccount + Sync>(
     swap_client: &SwapClient<A>,
     tick: i32,
 ) -> Result<U256, ClientError> {
-    let selector = get_selector_from_name("get_sqrt_ratio_at_tick")
-        .map_err(|err| ClientError::InvalidInput(err.to_string()))?;
-    let calldata = vec![i32_to_felt(tick)?];
-    let call = FunctionCall {
-        contract_address: swap_client.pool_address,
-        entry_point_selector: selector,
-        calldata,
-    };
-    let provider = swap_client.account.provider();
-    let result = with_retry(swap_client.retry.clone(), || async {
-        provider
-            .call(call.clone(), BlockId::Tag(BlockTag::Latest))
-            .await
-            .map_err(|err| ClientError::Rpc(err.to_string()))
-    })
-    .await?;
-    if result.len() < 2 {
-        return Err(ClientError::Rpc("invalid sqrt ratio".to_string()));
+    let onchain = swap_client.get_sqrt_ratio_at_tick(tick).await?;
+    if should_validate_local_tick_math() {
+        let local = tick_to_sqrt_ratio_local(tick)?;
+        if onchain != local {
+            return Err(ClientError::Rpc(format!(
+                "local tick math mismatch at tick {tick}: local={local:?} onchain={onchain:?}"
+            )));
+        }
     }
-    Ok(U256::from_words(
-        felt_to_u128(&result[0])?,
-        felt_to_u128(&result[1])?,
-    ))
+    Ok(onchain)
 }
 
 async fn fetch_fee_growth_inside<A: ConnectedAccount + Sync>(
@@ -2544,6 +3109,160 @@ fn default_circuit_dir(circuit: &str) -> PathBuf {
     PathBuf::from("artifacts").join(circuit)
 }
 
+fn swap_base_circuit_name(exact_out: bool, zero_for_one: bool) -> &'static str {
+    match (exact_out, zero_for_one) {
+        (false, true) => "private_swap_zero_for_one",
+        (false, false) => "private_swap_one_for_zero",
+        (true, true) => "private_swap_exact_out_zero_for_one",
+        (true, false) => "private_swap_exact_out_one_for_zero",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SwapCircuitPlan {
+    dir: PathBuf,
+    max_steps: usize,
+}
+
+fn count_active_swap_steps(quote: &SwapStepsQuote) -> usize {
+    let mut last_non_idle = 0usize;
+    for (idx, step) in quote.steps.iter().enumerate() {
+        if !swap_step_is_idle(step) {
+            last_non_idle = idx + 1;
+        }
+    }
+    last_non_idle.max(1)
+}
+
+fn swap_step_is_idle(step: &crate::swap::SwapStepQuote) -> bool {
+    step.amount_in == 0
+        && step.amount_out == 0
+        && step.fee_amount == 0
+        && step.sqrt_price_next == U256::from(0u8)
+        && step.sqrt_price_limit == U256::from(0u8)
+        && step.tick_next == 0
+        && step.liquidity_net == U256::from(0u8)
+        && step.fee_growth_global_0 == U256::from(0u8)
+        && step.fee_growth_global_1 == U256::from(0u8)
+}
+
+fn truncate_swap_quote(quote: &SwapStepsQuote, max_steps: usize) -> SwapStepsQuote {
+    let mut out = quote.clone();
+    out.steps.truncate(max_steps);
+    out
+}
+
+fn select_swap_circuit_plan(
+    configured_dir: Option<PathBuf>,
+    exact_out: bool,
+    zero_for_one: bool,
+    active_steps: usize,
+) -> Result<SwapCircuitPlan, ClientError> {
+    let base_name = swap_base_circuit_name(exact_out, zero_for_one);
+    let configured_dir = configured_dir.unwrap_or_else(|| default_circuit_dir(base_name));
+    let parent = configured_dir
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let max_supported_steps = *SWAP_CIRCUIT_STEP_OPTIONS
+        .last()
+        .expect("swap step options must not be empty");
+
+    if let Some(explicit_steps) = infer_circuit_steps_from_dir(&configured_dir, base_name) {
+        if !swap_circuit_artifacts_exist(&configured_dir, base_name) {
+            return Err(ClientError::InvalidInput(format!(
+                "swap circuit artifacts are incomplete for {}",
+                configured_dir.display()
+            )));
+        }
+        return Ok(SwapCircuitPlan {
+            dir: configured_dir,
+            max_steps: explicit_steps,
+        });
+    }
+
+    let required_steps = active_steps.min(max_supported_steps);
+    let variant_candidates: Vec<(usize, PathBuf)> = SWAP_CIRCUIT_STEP_OPTIONS
+        .iter()
+        .copied()
+        .filter(|max_steps| *max_steps >= required_steps)
+        .map(|max_steps| (max_steps, parent.join(format!("{base_name}_{max_steps}"))))
+        .collect();
+
+    if !auto_swap_step_variants_enabled() {
+        let (max_steps, dir) = variant_candidates.last().cloned().ok_or_else(|| {
+            ClientError::InvalidInput(format!(
+                "no swap circuit variant supports {} steps for {}",
+                required_steps, base_name
+            ))
+        })?;
+        if !swap_circuit_artifacts_exist(&dir, base_name) {
+            return Err(ClientError::InvalidInput(format!(
+                "swap circuit artifacts are incomplete for {}",
+                dir.display()
+            )));
+        }
+        return Ok(SwapCircuitPlan { dir, max_steps });
+    }
+
+    for (max_steps, dir) in &variant_candidates {
+        if swap_circuit_artifacts_exist(dir, base_name) {
+            return Ok(SwapCircuitPlan {
+                dir: dir.clone(),
+                max_steps: *max_steps,
+            });
+        }
+    }
+
+    let checked = variant_candidates
+        .iter()
+        .map(|(_, path)| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(ClientError::InvalidInput(format!(
+        "missing complete swap artifacts for {} (required_steps={}, checked: {})",
+        base_name, required_steps, checked
+    )))
+}
+
+fn infer_circuit_steps_from_dir(path: &Path, base_name: &str) -> Option<usize> {
+    let name = path.file_name()?.to_str()?;
+    if name == base_name {
+        return None;
+    }
+    let suffix = name.strip_prefix(base_name)?.strip_prefix('_')?;
+    let steps = suffix.parse::<usize>().ok()?;
+    if SWAP_CIRCUIT_STEP_OPTIONS.contains(&steps) {
+        Some(steps)
+    } else {
+        None
+    }
+}
+
+fn swap_circuit_artifacts_exist(dir: &Path, base_name: &str) -> bool {
+    artifact_file_usable(&dir.join(format!("{base_name}.wasm")))
+        && artifact_file_usable(&dir.join(format!("{base_name}_final.zkey")))
+        && artifact_file_usable(&dir.join("verification_key.json"))
+        && artifact_file_usable(&dir.join(base_name))
+        && artifact_file_usable(&dir.join(format!("{base_name}.dat")))
+}
+
+fn artifact_file_usable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.len() >= 1024)
+        .unwrap_or(false)
+}
+
+fn auto_swap_step_variants_enabled() -> bool {
+    match std::env::var("ZYLITH_AUTO_SWAP_STEP_VARIANTS") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => true,
+    }
+}
+
 fn parse_hex_felt(value: &str) -> Result<Felt, ClientError> {
     if value.starts_with("0x") {
         Felt::from_hex(value).map_err(|_| ClientError::Asp("invalid felt".to_string()))
@@ -2556,9 +3275,11 @@ fn i32_to_felt(value: i32) -> Result<Felt, ClientError> {
     if value >= 0 {
         Ok(Felt::from(value as u64))
     } else {
-        let modulus =
-            BigUint::parse_bytes(b"800000000000011000000000000000000000000000000000000000000000001", 16)
-                .ok_or_else(|| ClientError::Crypto("invalid modulus".to_string()))?;
+        let modulus = BigUint::parse_bytes(
+            b"800000000000011000000000000000000000000000000000000000000000001",
+            16,
+        )
+        .ok_or_else(|| ClientError::Crypto("invalid modulus".to_string()))?;
         let mag = BigUint::from((-value) as u32);
         let result = modulus - mag;
         let bytes = result.to_bytes_be();
@@ -2566,6 +3287,93 @@ fn i32_to_felt(value: i32) -> Result<Felt, ClientError> {
         out[32 - bytes.len()..].copy_from_slice(&bytes);
         Ok(Felt::from_bytes_be(&out))
     }
+}
+
+fn tick_to_sqrt_ratio_local(tick: i32) -> Result<U256, ClientError> {
+    let tick_i64 = i64::from(tick);
+    let tick_mag = tick_i64.unsigned_abs() as u128;
+    if tick_mag > MAX_TICK_MAGNITUDE {
+        return Err(ClientError::InvalidInput("tick out of range".to_string()));
+    }
+
+    let mut ratio = if (tick_mag & 1) != 0 {
+        BigUint::from(TICK_SQRT_RATIO_MULTIPLIERS[0])
+    } else {
+        BigUint::one() << 128u32
+    };
+
+    for (bit, mul) in TICK_SQRT_RATIO_MULTIPLIERS.iter().enumerate().skip(1) {
+        if (tick_mag & (1u128 << bit)) != 0 {
+            ratio = (ratio * BigUint::from(*mul)) >> 128u32;
+        }
+    }
+
+    if tick > 0 {
+        let max_u256 = (BigUint::from(U128_MAX) << 128u32) + BigUint::from(U128_MAX);
+        ratio = max_u256 / ratio;
+    }
+
+    biguint_to_u256(&ratio)
+}
+
+fn should_validate_local_tick_math() -> bool {
+    match std::env::var("ZYLITH_VALIDATE_LOCAL_TICK_MATH") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => true,
+    }
+}
+
+fn biguint_to_u256(value: &BigUint) -> Result<U256, ClientError> {
+    let bytes = value.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err(ClientError::InvalidInput("u256 overflow".to_string()));
+    }
+    let mut padded = [0u8; 32];
+    padded[32 - bytes.len()..].copy_from_slice(&bytes);
+    let high = u128::from_be_bytes(padded[0..16].try_into().unwrap());
+    let low = u128::from_be_bytes(padded[16..32].try_into().unwrap());
+    Ok(U256::from_words(low, high))
+}
+
+#[cfg(test)]
+mod tick_math_tests {
+    use super::*;
+
+    #[test]
+    fn tick_zero_ratio_matches_q128() {
+        let ratio = tick_to_sqrt_ratio_local(0).expect("tick=0 ratio");
+        assert_eq!(ratio, U256::from_words(0, 1));
+    }
+
+    #[test]
+    fn tick_bounds_are_supported() {
+        let min = tick_to_sqrt_ratio_local(-(MAX_TICK_MAGNITUDE as i32)).expect("min tick");
+        let max = tick_to_sqrt_ratio_local(MAX_TICK_MAGNITUDE as i32).expect("max tick");
+        assert_ne!(min, U256::from(0u8));
+        assert_ne!(max, U256::from(0u8));
+    }
+
+    #[test]
+    fn tick_out_of_range_is_rejected() {
+        let over = (MAX_TICK_MAGNITUDE as i32) + 1;
+        assert!(tick_to_sqrt_ratio_local(over).is_err());
+        assert!(tick_to_sqrt_ratio_local(-over).is_err());
+    }
+}
+
+fn prefix_swap_variant_selector(proof: &mut ProofCalldata, max_steps: usize, zero_for_one: bool) {
+    proof.prepend_tokens(&[
+        SWAP_STEPS_PREFIX_HEX.to_string(),
+        max_steps.to_string(),
+        if zero_for_one {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        },
+    ]);
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2592,7 +3400,10 @@ mod vector_gen {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use url::Url;
-    use zylith_prover::{generate_lp_add_witness_inputs, generate_lp_remove_witness_inputs, generate_swap_witness_inputs};
+    use zylith_prover::{
+        generate_lp_add_witness_inputs, generate_lp_remove_witness_inputs,
+        generate_swap_witness_inputs,
+    };
 
     use crate::client::PoolState;
     use crate::utils::{felt_to_i32, parse_felt};
@@ -2644,14 +3455,8 @@ mod vector_gen {
         let mut rng = StdRng::seed_from_u64(0x5a17b0);
         let vectors_root = repo_root.join("circuits/test/vectors");
 
-        let (single_swap, multi_swap) = build_swap_vectors(
-            &swap_client,
-            &pool_config,
-            &mut rng,
-            5_000,
-            2,
-        )
-        .await?;
+        let (single_swap, multi_swap) =
+            build_swap_vectors(&swap_client, &pool_config, &mut rng, 5_000, 2).await?;
         write_vector(
             vectors_root.join("private_swap/single_step_swap.json"),
             single_swap.clone(),
@@ -2689,14 +3494,9 @@ mod vector_gen {
             true,
         )?;
 
-        let (single_exact_out, multi_exact_out) = build_swap_exact_out_vectors(
-            &swap_client,
-            &pool_config,
-            &mut rng,
-            2_000,
-            2,
-        )
-        .await?;
+        let (single_exact_out, multi_exact_out) =
+            build_swap_exact_out_vectors(&swap_client, &pool_config, &mut rng, 2_000, 2, false)
+                .await?;
         write_vector(
             vectors_root.join("private_swap_exact_out/single_step_swap_exact_out.json"),
             single_exact_out.clone(),
@@ -2707,14 +3507,18 @@ mod vector_gen {
             multi_exact_out.clone(),
             false,
         )?;
+        let (single_exact_out_zfo, _multi_exact_out_zfo) =
+            build_swap_exact_out_vectors(&swap_client, &pool_config, &mut rng, 2_000, 2, true)
+                .await?;
+        write_vector(
+            vectors_root
+                .join("private_swap_exact_out/single_step_swap_exact_out_zero_for_one.json"),
+            single_exact_out_zfo,
+            false,
+        )?;
 
-        let (liq_add, liq_remove, liq_claim) = build_liquidity_vectors(
-            &swap_client,
-            &pool_config,
-            &pool_state,
-            &mut rng,
-        )
-        .await?;
+        let (liq_add, liq_remove, liq_claim) =
+            build_liquidity_vectors(&swap_client, &pool_config, &pool_state, &mut rng).await?;
         write_vector(
             vectors_root.join("private_liquidity/add_liquidity_in_range.json"),
             liq_add.clone(),
@@ -2752,14 +3556,8 @@ mod vector_gen {
         base_amount: u128,
         min_steps: usize,
     ) -> Result<(Value, Value), Box<dyn Error>> {
-        let single = build_swap_exact_in_vector(
-            swap_client,
-            pool_config,
-            rng,
-            base_amount,
-            1,
-        )
-        .await?;
+        let single =
+            build_swap_exact_in_vector(swap_client, pool_config, rng, base_amount, 1).await?;
         let multi = build_swap_exact_in_vector(
             swap_client,
             pool_config,
@@ -2777,6 +3575,7 @@ mod vector_gen {
         rng: &mut StdRng,
         base_amount: u128,
         min_steps: usize,
+        zero_for_one: bool,
     ) -> Result<(Value, Value), Box<dyn Error>> {
         let single = build_swap_exact_out_vector(
             swap_client,
@@ -2784,6 +3583,7 @@ mod vector_gen {
             rng,
             base_amount,
             1,
+            zero_for_one,
         )
         .await?;
         let multi = build_swap_exact_out_vector(
@@ -2792,6 +3592,7 @@ mod vector_gen {
             rng,
             base_amount.saturating_mul(10),
             min_steps,
+            zero_for_one,
         )
         .await?;
         Ok((single, multi))
@@ -2806,12 +3607,14 @@ mod vector_gen {
     ) -> Result<Value, Box<dyn Error>> {
         let zero_for_one = true;
         let input_token = pool_config.token0;
-        let notes = split_notes(rng, amount_in, input_token, 0)?;
         let sqrt_ratio_limit = default_sqrt_ratio_limit(pool_config, zero_for_one);
         let quote = quote_with_min_steps(
             swap_client,
             sqrt_ratio_limit,
-            SignedAmount { mag: amount_in, sign: false },
+            SignedAmount {
+                mag: amount_in,
+                sign: false,
+            },
             !zero_for_one,
             min_steps,
         )
@@ -2819,15 +3622,11 @@ mod vector_gen {
         let step_liquidity = compute_step_liquidity(swap_client, &quote, zero_for_one).await?;
         let (_in_steps, _out_steps, amount_out_total, amount_in_consumed) =
             summarize_swap_amounts(&quote.steps)?;
-        let change_amount = amount_in
-            .checked_sub(amount_in_consumed)
-            .ok_or("amount_in underflow")?;
-        let output_note = build_output_note_for_amount(
-            rng,
-            amount_out_total,
-            pool_config.token1,
-            1,
-        )?;
+        let required_input = amount_in.max(amount_in_consumed);
+        let notes = split_notes(rng, required_input, input_token, 0)?;
+        let change_amount = required_input.saturating_sub(amount_in_consumed);
+        let output_note =
+            build_output_note_for_amount(rng, amount_out_total, pool_config.token1, 1)?;
         let change_note = build_output_note_for_amount(rng, change_amount, input_token, 0)?;
         let output_commitment = output_note
             .as_ref()
@@ -2870,13 +3669,16 @@ mod vector_gen {
         rng: &mut StdRng,
         amount_out: u128,
         min_steps: usize,
+        zero_for_one: bool,
     ) -> Result<Value, Box<dyn Error>> {
-        let zero_for_one = true;
         let sqrt_ratio_limit = default_sqrt_ratio_limit(pool_config, zero_for_one);
         let quote = quote_with_min_steps(
             swap_client,
             sqrt_ratio_limit,
-            SignedAmount { mag: amount_out, sign: true },
+            SignedAmount {
+                mag: amount_out,
+                sign: true,
+            },
             zero_for_one,
             min_steps,
         )
@@ -2886,12 +3688,8 @@ mod vector_gen {
             summarize_swap_amounts(&quote.steps)?;
         let input_token = pool_config.token0;
         let notes = split_notes(rng, amount_in_consumed, input_token, 0)?;
-        let output_note = build_output_note_for_amount(
-            rng,
-            amount_out_total,
-            pool_config.token1,
-            1,
-        )?;
+        let output_note =
+            build_output_note_for_amount(rng, amount_out_total, pool_config.token1, 1)?;
         let output_commitment = output_note
             .as_ref()
             .map(|note| compute_commitment(note, 1))
@@ -2922,6 +3720,85 @@ mod vector_gen {
         Ok(wrap_input(generate_swap_witness_inputs(witness)?))
     }
 
+    fn synthetic_exact_out_quote() -> SwapStepsQuote {
+        let one = U256::from(1u8);
+        let steps = (0..generated_constants::MAX_SWAP_STEPS)
+            .map(|_| crate::swap::SwapStepQuote {
+                sqrt_price_next: one,
+                sqrt_price_limit: one,
+                tick_next: 0,
+                liquidity_net: U256::from(0u8),
+                fee_growth_global_0: U256::from(0u8),
+                fee_growth_global_1: U256::from(0u8),
+                amount_in: 0,
+                amount_out: 0,
+                fee_amount: 0,
+            })
+            .collect();
+        SwapStepsQuote {
+            sqrt_price_start: one,
+            sqrt_price_end: one,
+            tick_start: 0,
+            tick_end: 0,
+            liquidity_start: 1,
+            liquidity_end: 1,
+            fee_growth_global_0_before: U256::from(0u8),
+            fee_growth_global_1_before: U256::from(0u8),
+            fee_growth_global_0_after: U256::from(0u8),
+            fee_growth_global_1_after: U256::from(0u8),
+            is_limited: true,
+            steps,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn regenerate_exact_out_zfo_vector_offline() -> Result<(), Box<dyn Error>> {
+        let repo_root = repo_root();
+        let output_path = repo_root.join(
+            "circuits/test/vectors/private_swap_exact_out/single_step_swap_exact_out_zero_for_one.json",
+        );
+        let mut rng = StdRng::seed_from_u64(0x7a11_ce55);
+        let token0 = Felt::from(1u8);
+        let token1 = Felt::from(2u8);
+        let pool_config = PoolConfig {
+            token0,
+            token1,
+            fee: 3000,
+            tick_spacing: 1,
+            min_sqrt_ratio: U256::from(1u8),
+            max_sqrt_ratio: U256::from(u128::MAX),
+        };
+        let notes = split_notes(&mut rng, 0, token0, 0)?;
+        let request = SwapProveRequest {
+            notes,
+            zero_for_one: true,
+            exact_out: true,
+            amount_out: Some(0),
+            sqrt_ratio_limit: Some(U256::from(1u8)),
+            output_note: None,
+            change_note: None,
+            circuit_dir: None,
+        };
+        let quote = synthetic_exact_out_quote();
+        let step_liquidity = vec![1u128; generated_constants::MAX_SWAP_STEPS];
+        let witness = build_swap_witness_exact_out(
+            &request,
+            &request.output_note,
+            &request.change_note,
+            &pool_config,
+            &quote,
+            &step_liquidity,
+            &Felt::ONE,
+            Felt::ZERO,
+            Felt::ZERO,
+            0,
+        )?;
+        let wrapped = wrap_input(generate_swap_witness_inputs(witness)?);
+        write_vector(output_path, wrapped, false)?;
+        Ok(())
+    }
+
     async fn build_liquidity_vectors(
         swap_client: &SwapClient<Arc<Account>>,
         pool_config: &PoolConfig,
@@ -2933,7 +3810,9 @@ mod vector_gen {
             return Err("pool tick spacing is zero; pool not initialized".into());
         }
         if pool_state.sqrt_price == U256::from(0u128) {
-            return Err("pool sqrt_price is zero; initialize pool before generating vectors".into());
+            return Err(
+                "pool sqrt_price is zero; initialize pool before generating vectors".into(),
+            );
         }
         let tick_center = align_tick(pool_state.tick, tick_spacing);
         let tick_lower = tick_center - tick_spacing;
@@ -2990,6 +3869,7 @@ mod vector_gen {
         Ok((add, remove, claim))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_liquidity_add_vector(
         pool_config: &PoolConfig,
         pool_state: &PoolState,
@@ -3039,8 +3919,14 @@ mod vector_gen {
             pool_state.sqrt_price,
             pool_state.tick,
             pool_state.liquidity,
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1),
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1),
+            U256::from_words(
+                pool_state.fee_growth_global_0.0,
+                pool_state.fee_growth_global_0.1,
+            ),
+            U256::from_words(
+                pool_state.fee_growth_global_1.0,
+                pool_state.fee_growth_global_1.1,
+            ),
             tick_lower,
             tick_upper,
             sqrt_ratio_lower,
@@ -3074,6 +3960,7 @@ mod vector_gen {
         Ok(wrap_input(generate_lp_add_witness_inputs(witness)?))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_liquidity_remove_vector(
         pool_config: &PoolConfig,
         pool_state: &PoolState,
@@ -3135,10 +4022,8 @@ mod vector_gen {
             .checked_sub(protocol_fee_1)
             .and_then(|val| val.checked_add(fee_amount1))
             .ok_or("token1 output underflow")?;
-        let out_note0 =
-            build_output_note_for_amount(rng, out_amount0, pool_config.token0, 0)?;
-        let out_note1 =
-            build_output_note_for_amount(rng, out_amount1, pool_config.token1, 1)?;
+        let out_note0 = build_output_note_for_amount(rng, out_amount0, pool_config.token0, 0)?;
+        let out_note1 = build_output_note_for_amount(rng, out_amount1, pool_config.token1, 1)?;
         let output_commitment_token0 = out_note0
             .as_ref()
             .map(|note| compute_commitment(note, 0))
@@ -3160,8 +4045,14 @@ mod vector_gen {
             pool_state.sqrt_price,
             pool_state.tick,
             pool_state.liquidity,
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1),
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1),
+            U256::from_words(
+                pool_state.fee_growth_global_0.0,
+                pool_state.fee_growth_global_0.1,
+            ),
+            U256::from_words(
+                pool_state.fee_growth_global_1.0,
+                pool_state.fee_growth_global_1.1,
+            ),
             tick_lower,
             tick_upper,
             sqrt_ratio_lower,
@@ -3195,6 +4086,7 @@ mod vector_gen {
         Ok(wrap_input(generate_lp_remove_witness_inputs(witness)?))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_liquidity_claim_vector(
         pool_config: &PoolConfig,
         pool_state: &PoolState,
@@ -3233,10 +4125,8 @@ mod vector_gen {
             fee_growth_inside_after,
             fee_growth_inside_after,
         )?;
-        let out_note0 =
-            build_output_note_for_amount(rng, fee_amount0, pool_config.token0, 0)?;
-        let out_note1 =
-            build_output_note_for_amount(rng, fee_amount1, pool_config.token1, 1)?;
+        let out_note0 = build_output_note_for_amount(rng, fee_amount0, pool_config.token0, 0)?;
+        let out_note1 = build_output_note_for_amount(rng, fee_amount1, pool_config.token1, 1)?;
         let output_commitment_token0 = out_note0
             .as_ref()
             .map(|note| compute_commitment(note, 0))
@@ -3258,8 +4148,14 @@ mod vector_gen {
             pool_state.sqrt_price,
             pool_state.tick,
             pool_state.liquidity,
-            U256::from_words(pool_state.fee_growth_global_0.0, pool_state.fee_growth_global_0.1),
-            U256::from_words(pool_state.fee_growth_global_1.0, pool_state.fee_growth_global_1.1),
+            U256::from_words(
+                pool_state.fee_growth_global_0.0,
+                pool_state.fee_growth_global_0.1,
+            ),
+            U256::from_words(
+                pool_state.fee_growth_global_1.0,
+                pool_state.fee_growth_global_1.1,
+            ),
             tick_lower,
             tick_upper,
             sqrt_ratio_lower,
@@ -3379,7 +4275,7 @@ mod vector_gen {
         token: Felt,
         token_id: u8,
     ) -> Result<Note, ClientError> {
-        for _ in 0..64 {
+        for _ in 0..4096 {
             let mut secret = [0u8; 32];
             let mut nullifier = [0u8; 32];
             rng.fill_bytes(&mut secret);
@@ -3394,9 +4290,7 @@ mod vector_gen {
                 return Ok(note);
             }
         }
-        Err(ClientError::Crypto(
-            "failed to generate note".to_string(),
-        ))
+        Err(ClientError::Crypto("failed to generate note".to_string()))
     }
 
     fn next_position_note(
@@ -3407,7 +4301,7 @@ mod vector_gen {
         fee_growth_inside_0: U256,
         fee_growth_inside_1: U256,
     ) -> Result<PositionNote, ClientError> {
-        for _ in 0..64 {
+        for _ in 0..4096 {
             let mut secret = [0u8; 32];
             let mut nullifier = [0u8; 32];
             rng.fill_bytes(&mut secret);
@@ -3431,11 +4325,7 @@ mod vector_gen {
     }
 
     fn wrap_input(input: Value) -> Value {
-        Value::Object(
-            [("input".to_string(), input)]
-                .into_iter()
-                .collect(),
-        )
+        Value::Object([("input".to_string(), input)].into_iter().collect())
     }
 
     fn write_vector(path: PathBuf, input: Value, should_fail: bool) -> Result<(), Box<dyn Error>> {
@@ -3512,8 +4402,7 @@ mod vector_gen {
     }
 
     fn required_felt(name: &str) -> Result<Felt, Box<dyn Error>> {
-        let value = env::var(name)
-            .map_err(|_| format!("missing env {}", name))?;
+        let value = env::var(name).map_err(|_| format!("missing env {}", name))?;
         Ok(parse_felt(&value)?)
     }
 
@@ -3524,9 +4413,7 @@ mod vector_gen {
     }
 
     fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
     async fn fetch_pool_state(
@@ -3547,10 +4434,7 @@ mod vector_gen {
         if result.len() < 8 {
             return Err(ClientError::Rpc("invalid pool state".to_string()));
         }
-        let sqrt_price = U256::from_words(
-            felt_to_u128(&result[0])?,
-            felt_to_u128(&result[1])?,
-        );
+        let sqrt_price = U256::from_words(felt_to_u128(&result[0])?, felt_to_u128(&result[1])?);
         let tick = felt_to_i32(&result[2])?;
         let liquidity = felt_to_u128(&result[3])?;
         let fee0_low = felt_to_u128(&result[4])?;

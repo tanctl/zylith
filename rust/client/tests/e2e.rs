@@ -18,11 +18,12 @@ use url::Url;
 use zylith_client::{
     compute_commitment, compute_position_commitment, generate_note_with_token_id,
     generate_nullifier_hash, parse_felt, DepositRequest, LiquidityAddProveRequest,
-    LiquidityRemoveProveRequest, LiquidityRequest, Note, SwapProveRequest, WithdrawRequest,
-    SwapClient, ZylithClient, ZylithConfig,
+    LiquidityRemoveProveRequest, LiquidityRequest, Note, SwapClient, SwapProveRequest,
+    WithdrawRequest, ZylithClient, ZylithConfig,
 };
-use zylith_prover::{prove_deposit, prove_withdraw, DepositWitnessInputs, ProofCalldata,
-    WithdrawWitnessInputs, WitnessValue,
+use zylith_prover::{
+    prove_deposit, prove_withdraw, DepositWitnessInputs, ProofCalldata, WithdrawWitnessInputs,
+    WitnessValue,
 };
 
 type Account = SingleOwnerAccount<JsonRpcClient<HttpTransport>, LocalWallet>;
@@ -47,12 +48,14 @@ async fn e2e_flow() -> Result<(), Box<dyn std::error::Error>> {
 
     let token0 = env::var("TOKEN0")
         .map(|v| parse_felt(&v))
-        .unwrap_or_else(|_| parse_felt("0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"))
-        ?;
+        .unwrap_or_else(|_| {
+            parse_felt("0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d")
+        })?;
     let token1 = env::var("TOKEN1")
         .map(|v| parse_felt(&v))
-        .unwrap_or_else(|_| parse_felt("0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"))
-        ?;
+        .unwrap_or_else(|_| {
+            parse_felt("0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7")
+        })?;
 
     let (pool_address, shielded_notes) = resolve_addresses()?;
 
@@ -219,10 +222,17 @@ async fn e2e_flow() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("deposit swap note1: {e}"))?;
 
     let swap_debug_config = client.get_pool_config().await?;
-    let swap_debug_limit = if true { swap_debug_config.min_sqrt_ratio } else { swap_debug_config.max_sqrt_ratio };
+    let swap_debug_limit = if true {
+        swap_debug_config.min_sqrt_ratio
+    } else {
+        swap_debug_config.max_sqrt_ratio
+    };
     let debug_quote = swap_client
         .quote_swap_steps(zylith_client::SwapQuoteRequest {
-            amount: zylith_client::SignedAmount { mag: 100_000_000, sign: false },
+            amount: zylith_client::SignedAmount {
+                mag: 100_000_000,
+                sign: false,
+            },
             is_token1: false,
             sqrt_ratio_limit: swap_debug_limit,
             skip_ahead: 0,
@@ -253,7 +263,7 @@ async fn e2e_flow() -> Result<(), Box<dyn std::error::Error>> {
             sqrt_ratio_limit: None,
             output_note: None,
             change_note: None,
-            circuit_dir: Some(default_circuit_dir("private_swap")),
+            circuit_dir: Some(default_circuit_dir("private_swap_zero_for_one")),
         })
         .await
         .map_err(|e| format!("prove swap: {e}"))?;
@@ -268,9 +278,7 @@ async fn e2e_flow() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("swap tx: {e}"))?;
 
-    let output_note = swap_result
-        .output_note
-        .ok_or("missing swap output note")?;
+    let output_note = swap_result.output_note.ok_or("missing swap output note")?;
     let output_commitment = compute_commitment(&output_note, 1)?;
     let withdraw_path = wait_for_path(&swap_client, output_commitment).await?;
     let withdraw_proof = prove_withdraw_note(&output_note, 1, account_address).await?;
@@ -327,20 +335,38 @@ async fn deposit_note(
     token_id: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let proof = prove_deposit_note(note, token_id).await?;
-    let insertion = wait_for_insertion_path(swap_client, token).await?;
-    client
-        .deposit(DepositRequest {
-            note: note.clone(),
-            token_id,
-            token_address: token,
-            proof,
-            insertion_proof: insertion,
-        })
-        .await?;
+    let mut last_err: Option<String> = None;
+    for _attempt in 0..3 {
+        let insertion = wait_for_insertion_path(swap_client, token).await?;
+        match client
+            .deposit(DepositRequest {
+                note: note.clone(),
+                token_id,
+                token_address: token,
+                proof: proof.clone(),
+                insertion_proof: insertion,
+            })
+            .await
+        {
+            Ok(_) => {
+                let commitment = compute_commitment(note, token_id)?;
+                wait_for_path(swap_client, commitment).await?;
+                return Ok(());
+            }
+            Err(err) => {
+                let message = err.to_string();
+                last_err = Some(message.clone());
+                if !message.contains("LEAF_INDEX_MISMATCH") {
+                    return Err(Box::new(err));
+                }
+                sleep(Duration::from_millis(700)).await;
+            }
+        }
+    }
 
-    let commitment = compute_commitment(note, token_id)?;
-    wait_for_path(swap_client, commitment).await?;
-    Ok(())
+    Err(last_err
+        .unwrap_or_else(|| "deposit failed after retries".to_string())
+        .into())
 }
 
 async fn wait_for_insertion_path(
@@ -397,7 +423,10 @@ async fn wait_for_optional_note_paths(
     Ok(())
 }
 
-async fn prove_deposit_note(note: &Note, token_id: u8) -> Result<ProofCalldata, Box<dyn std::error::Error>> {
+async fn prove_deposit_note(
+    note: &Note,
+    token_id: u8,
+) -> Result<ProofCalldata, Box<dyn std::error::Error>> {
     let commitment = compute_commitment(note, token_id)?;
     let tag = vk_tag("DEPOSIT")?;
     let mut values = HashMap::new();

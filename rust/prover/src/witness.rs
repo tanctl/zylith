@@ -68,7 +68,9 @@ pub fn generate_deposit_witness_inputs(inputs: DepositWitnessInputs) -> Result<V
 }
 
 /// builds a witness json from caller-supplied fields matching the withdraw circuit inputs.
-pub fn generate_withdraw_witness_inputs(inputs: WithdrawWitnessInputs) -> Result<Value, ProverError> {
+pub fn generate_withdraw_witness_inputs(
+    inputs: WithdrawWitnessInputs,
+) -> Result<Value, ProverError> {
     build_witness_from_values(inputs.values)
 }
 
@@ -76,9 +78,7 @@ fn build_witness_from_map(inputs: LpWitnessInputs) -> Result<Value, ProverError>
     build_witness_from_values(inputs.values)
 }
 
-fn build_witness_from_values(
-    values: HashMap<String, WitnessValue>,
-) -> Result<Value, ProverError> {
+fn build_witness_from_values(values: HashMap<String, WitnessValue>) -> Result<Value, ProverError> {
     let mut map = serde_json::Map::new();
     for (key, value) in values {
         map.insert(key, witness_value_to_json(value)?);
@@ -90,7 +90,9 @@ fn witness_value_to_json(value: WitnessValue) -> Result<Value, ProverError> {
     match value {
         WitnessValue::Scalar(value) => Ok(Value::String(value)),
         WitnessValue::U128(value) => Ok(Value::String(value.to_string())),
-        WitnessValue::I32(value) => Ok(Value::String(encode_i32_twos_complement(value).to_string())),
+        WitnessValue::I32(value) => {
+            Ok(Value::String(encode_i32_twos_complement(value).to_string()))
+        }
         WitnessValue::Bool(value) => Ok(Value::String(bool_to_string(value))),
         WitnessValue::Bytes32(value) => Ok(Value::String(bytes_to_decimal(value))),
         WitnessValue::U256(value) => Ok(Value::Array(
@@ -126,16 +128,18 @@ fn witness_value_to_json(value: WitnessValue) -> Result<Value, ProverError> {
         WitnessValue::VecU256(values) => Ok(Value::Array(
             values
                 .into_iter()
-                .map(|v| {
-                    Value::Array(u256_to_limbs(v).into_iter().map(Value::String).collect())
-                })
+                .map(|v| Value::Array(u256_to_limbs(v).into_iter().map(Value::String).collect()))
                 .collect(),
         )),
         WitnessValue::MatrixU128(values) => Ok(Value::Array(
             values
                 .into_iter()
                 .map(|row| {
-                    Value::Array(row.into_iter().map(|v| Value::String(v.to_string())).collect())
+                    Value::Array(
+                        row.into_iter()
+                            .map(|v| Value::String(v.to_string()))
+                            .collect(),
+                    )
                 })
                 .collect(),
         )),
@@ -147,10 +151,7 @@ fn witness_value_to_json(value: WitnessValue) -> Result<Value, ProverError> {
                         row.into_iter()
                             .map(|v| {
                                 Value::Array(
-                                    u256_to_limbs(v)
-                                        .into_iter()
-                                        .map(Value::String)
-                                        .collect(),
+                                    u256_to_limbs(v).into_iter().map(Value::String).collect(),
                                 )
                             })
                             .collect(),
@@ -213,7 +214,11 @@ fn bytes_to_decimal(bytes: [u8; 32]) -> String {
 }
 
 fn bool_to_string(value: bool) -> String {
-    if value { "1".to_string() } else { "0".to_string() }
+    if value {
+        "1".to_string()
+    } else {
+        "0".to_string()
+    }
 }
 
 fn u128_to_limbs(value: u128) -> [String; 2] {

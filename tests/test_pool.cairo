@@ -1,18 +1,15 @@
+use core::serde::Serde;
 #[feature("deprecated_legacy_map")]
 use core::traits::TryInto;
-use core::serde::Serde;
 use snforge_std::{start_cheat_caller_address, test_address};
 use starknet::ContractAddress;
-
-use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
-use zylith::core::PoolAdapter::IPoolAdapterDispatcher;
-use zylith::core::PoolAdapter::IPoolAdapterDispatcherTrait;
 use zylith::clmm::math::ticks::tick_to_sqrt_ratio;
-
-use crate::common::{deploy_contract_at, u256_from_u128};
+use zylith::core::PoolAdapter::{IPoolAdapterDispatcher, IPoolAdapterDispatcherTrait};
+use zylith::core::ZylithPool::{ZylithPoolExternalDispatcher, ZylithPoolExternalDispatcherTrait};
 use crate::common::mocks::MockPoolAdapter::{
     MockPoolAdapterExternalDispatcher, MockPoolAdapterExternalDispatcherTrait,
 };
+use crate::common::{deploy_contract_at, u256_from_u128};
 
 fn setup_pool() -> (ZylithPoolExternalDispatcher, ContractAddress, ContractAddress) {
     let pool_address = 0x1000.try_into().expect('ADDRESS_RANGE');
@@ -98,8 +95,7 @@ fn test_pool_state_updates() {
     let (pool, adapter_address, pool_address) = setup_pool();
     let adapter = IPoolAdapterDispatcher { contract_address: adapter_address };
     start_cheat_caller_address(adapter_address, pool_address);
-    adapter
-        .set_pool_state(u256_from_u128(5), 5, 1_u128, 100, u256_from_u128(1), u256_from_u128(2));
+    adapter.set_pool_state(u256_from_u128(5), 5, 1_u128, 100, u256_from_u128(1), u256_from_u128(2));
     let state = pool.get_pool_state();
     assert(state.sqrt_price.low == 5, 'sqrt price update');
     assert(state.tick == 5, 'tick update');
@@ -111,8 +107,7 @@ fn test_fee_growth_tracking() {
     let (pool, adapter_address, pool_address) = setup_pool();
     let adapter = IPoolAdapterDispatcher { contract_address: adapter_address };
     start_cheat_caller_address(adapter_address, pool_address);
-    adapter
-        .set_pool_state(u256_from_u128(7), 0, 1_u128, 0, u256_from_u128(9), u256_from_u128(11));
+    adapter.set_pool_state(u256_from_u128(7), 0, 1_u128, 0, u256_from_u128(9), u256_from_u128(11));
     let (fee0, fee1) = pool.get_fee_growth_global();
     assert(fee0.low == 9, 'fee0 mismatch');
     assert(fee1.low == 11, 'fee1 mismatch');

@@ -1,22 +1,22 @@
+use core::array::ArrayTrait;
 #[feature("deprecated_legacy_map")]
 use core::serde::Serde;
-use core::array::ArrayTrait;
 use core::traits::TryInto;
-use snforge_std::{spy_events, EventSpy, EventSpyTrait, EventsFilterTrait, start_cheat_caller_address};
-use snforge_std::test_address;
+use snforge_std::{
+    EventSpy, EventSpyTrait, EventsFilterTrait, spy_events, start_cheat_caller_address,
+    test_address,
+};
 use starknet::ContractAddress;
-
 use zylith::interfaces::IERC20::{IERC20Dispatcher, IERC20DispatcherTrait};
 use zylith::privacy::ShieldedNotes::{
     ShieldedNotesExternalDispatcher, ShieldedNotesExternalDispatcherTrait,
 };
-
-use crate::common::{
-    deploy_contract_at, empty_root, insertion_proof_for_empty_leaf, merkle_proof_for_single_leaf,
-    merkle_root_for_single_leaf, u256_from_felt, u256_from_u128, insertion_proof_for_second_leaf,
-};
 use crate::common::mocks::MockGaragaVerifier::{
     MockGaragaVerifierExternalDispatcher, MockGaragaVerifierExternalDispatcherTrait,
+};
+use crate::common::{
+    deploy_contract_at, empty_root, insertion_proof_for_empty_leaf, insertion_proof_for_second_leaf,
+    merkle_proof_for_single_leaf, merkle_root_for_single_leaf, u256_from_felt, u256_from_u128,
 };
 
 fn setup_notes() -> (
@@ -218,11 +218,7 @@ fn test_withdraw_protocol_fees_requires_recipient() {
     let (notes, token0, _, _, notes_address) = setup_notes();
     let authorized_pool = notes.get_authorized_pool();
     start_cheat_caller_address(notes_address, authorized_pool);
-    notes.withdraw_protocol_fees(
-        token0.contract_address,
-        0.try_into().expect('ADDRESS_RANGE'),
-        1,
-    );
+    notes.withdraw_protocol_fees(token0.contract_address, 0.try_into().expect('ADDRESS_RANGE'), 1);
 }
 
 #[test]

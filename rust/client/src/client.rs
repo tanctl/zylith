@@ -82,7 +82,11 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
     }
 
     pub fn swap_client(&self) -> SwapClient<Arc<A>> {
-        let mut client = SwapClient::new(self.account.clone(), self.pool_address, self.asp_url.clone());
+        let mut client = SwapClient::new(
+            self.account.clone(),
+            self.pool_address,
+            self.asp_url.clone(),
+        );
         client.retry = self.retry.clone();
         client
     }
@@ -193,10 +197,7 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         if result.len() < 8 {
             return Err(ClientError::Rpc("invalid pool state".to_string()));
         }
-        let sqrt_price = U256::from_words(
-            felt_to_u128(&result[0])?,
-            felt_to_u128(&result[1])?,
-        );
+        let sqrt_price = U256::from_words(felt_to_u128(&result[0])?, felt_to_u128(&result[1])?);
         let tick = felt_to_i32(&result[2])?;
         let liquidity = felt_to_u128(&result[3])?;
         let fee0_low = felt_to_u128(&result[4])?;
@@ -242,12 +243,12 @@ impl<A: ConnectedAccount + Sync + Send> ZylithClient<A> {
         let fee = felt_to_u128(&result[2])?;
         let tick_spacing = felt_to_u128(&result[3])?;
         if tick_spacing == 0 || tick_spacing > generated_constants::MAX_TICK_SPACING {
-            return Err(ClientError::InvalidInput("invalid tick spacing".to_string()));
+            return Err(ClientError::InvalidInput(
+                "invalid tick spacing".to_string(),
+            ));
         }
-        let min_sqrt_ratio =
-            U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
-        let max_sqrt_ratio =
-            U256::from_words(felt_to_u128(&result[6])?, felt_to_u128(&result[7])?);
+        let min_sqrt_ratio = U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
+        let max_sqrt_ratio = U256::from_words(felt_to_u128(&result[6])?, felt_to_u128(&result[7])?);
         Ok(PoolConfig {
             token0,
             token1,

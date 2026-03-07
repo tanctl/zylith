@@ -1,28 +1,32 @@
 use num_bigint::BigUint;
 use serde::Deserialize;
 use starknet::accounts::ConnectedAccount;
-use starknet::core::types::{BlockId, BlockTag, Call, Felt, FunctionCall, U256};
+use starknet::core::types::{
+    BlockId, BlockTag, Call, ExecutionResult, Felt, FunctionCall, TransactionStatus, U256,
+};
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::Provider;
 use tokio::time::{sleep, Duration};
 
 use crate::client::{PoolConfig, RetryConfig};
 use crate::error::ClientError;
+use crate::generated_constants;
 use crate::notes::{compute_commitment, Note};
 use crate::utils::{felt_to_i32, felt_to_u128, parse_felt, Address};
 use starknet_crypto::poseidon_hash;
-use crate::generated_constants;
 use zylith_prover::ProofCalldata;
 
 pub type TxHash = Felt;
 
 const ASP_TIMEOUT_SECS: u64 = 60;
+const TX_POLL_MAX_ATTEMPTS: usize = 240;
+const TX_POLL_DELAY_MS: u64 = 500;
 
 fn asp_timeout() -> Result<Duration, ClientError> {
     if let Ok(value) = std::env::var("ZYLITH_ASP_TIMEOUT_SECS") {
-        let secs = value
-            .parse::<u64>()
-            .map_err(|_| ClientError::InvalidInput("invalid ZYLITH_ASP_TIMEOUT_SECS".to_string()))?;
+        let secs = value.parse::<u64>().map_err(|_| {
+            ClientError::InvalidInput("invalid ZYLITH_ASP_TIMEOUT_SECS".to_string())
+        })?;
         if secs == 0 {
             return Err(ClientError::InvalidInput(
                 "ZYLITH_ASP_TIMEOUT_SECS must be > 0".to_string(),
@@ -165,10 +169,14 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
             return Err(ClientError::InvalidInput("invalid token id".to_string()));
         }
         if notes.is_empty() {
-            return Err(ClientError::InvalidInput("notes cannot be empty".to_string()));
+            return Err(ClientError::InvalidInput(
+                "notes cannot be empty".to_string(),
+            ));
         }
         if notes.len() > generated_constants::MAX_INPUT_NOTES {
-            return Err(ClientError::InvalidInput("too many input notes".to_string()));
+            return Err(ClientError::InvalidInput(
+                "too many input notes".to_string(),
+            ));
         }
         let mut amount_in: u128 = 0;
         for note in &notes {
@@ -178,7 +186,9 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
                 .ok_or_else(|| ClientError::InvalidInput("note amount overflow".to_string()))?;
         }
         if amount_in == 0 {
-            return Err(ClientError::InvalidInput("input amount is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "input amount is zero".to_string(),
+            ));
         }
         Ok(SwapRequest {
             notes,
@@ -200,7 +210,10 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
             ));
         }
         let mut payload = serde_json::Map::new();
-        payload.insert("commitment".to_string(), serde_json::Value::String(felt_to_hex(commitment)));
+        payload.insert(
+            "commitment".to_string(),
+            serde_json::Value::String(felt_to_hex(commitment)),
+        );
         if let Some(index) = root_index {
             payload.insert(
                 "root_index".to_string(),
@@ -208,7 +221,10 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
             );
         }
         if let Some(hash) = root_hash {
-            payload.insert("root_hash".to_string(), serde_json::Value::String(felt_to_hex(hash)));
+            payload.insert(
+                "root_hash".to_string(),
+                serde_json::Value::String(felt_to_hex(hash)),
+            );
         }
 
         let url = format!("{}/path", self.asp_url.trim_end_matches('/'));
@@ -263,11 +279,13 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
     }
 
     pub async fn fetch_insertion_path(&self, token: Address) -> Result<MerklePath, ClientError> {
-        self.fetch_insertion_path_label(&felt_to_hex(token), token).await
+        self.fetch_insertion_path_label(&felt_to_hex(token), token)
+            .await
     }
 
     pub async fn fetch_position_insertion_path(&self) -> Result<MerklePath, ClientError> {
-        self.fetch_insertion_path_label("position", Felt::ZERO).await
+        self.fetch_insertion_path_label("position", Felt::ZERO)
+            .await
     }
 
     pub async fn simulate_swap(
@@ -275,7 +293,9 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         request: SwapQuoteRequest,
     ) -> Result<SwapResult, ClientError> {
         if self.pool_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("pool address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "pool address is zero".to_string(),
+            ));
         }
         let selector = get_selector_from_name("quote_swap")
             .map_err(|err| ClientError::InvalidInput(err.to_string()))?;
@@ -307,7 +327,8 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         }
         let amount0 = decode_signed_amount(&result[0], &result[1])?;
         let amount1 = decode_signed_amount(&result[2], &result[3])?;
-        let sqrt_price_after = U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
+        let sqrt_price_after =
+            U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
         let tick_after = felt_to_i32(&result[6])?;
         let liquidity_after = felt_to_u128(&result[7])?;
         Ok(SwapResult {
@@ -324,7 +345,9 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         request: SwapQuoteRequest,
     ) -> Result<SwapStepsQuote, ClientError> {
         if self.pool_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("pool address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "pool address is zero".to_string(),
+            ));
         }
         let selector = get_selector_from_name("quote_swap_steps")
             .map_err(|err| ClientError::InvalidInput(err.to_string()))?;
@@ -355,7 +378,9 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
 
     pub async fn get_sqrt_ratio_at_tick(&self, tick: i32) -> Result<U256, ClientError> {
         if self.pool_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("pool address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "pool address is zero".to_string(),
+            ));
         }
         let selector = get_selector_from_name("get_sqrt_ratio_at_tick")
             .map_err(|err| ClientError::InvalidInput(err.to_string()))?;
@@ -388,13 +413,19 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         exact_out: bool,
     ) -> Result<TxHash, ClientError> {
         if proofs.is_empty() {
-            return Err(ClientError::InvalidInput("missing merkle proofs".to_string()));
+            return Err(ClientError::InvalidInput(
+                "missing merkle proofs".to_string(),
+            ));
         }
         if proofs.len() > generated_constants::MAX_INPUT_NOTES {
-            return Err(ClientError::InvalidInput("too many merkle proofs".to_string()));
+            return Err(ClientError::InvalidInput(
+                "too many merkle proofs".to_string(),
+            ));
         }
         if self.pool_address == Felt::ZERO {
-            return Err(ClientError::InvalidInput("pool address is zero".to_string()));
+            return Err(ClientError::InvalidInput(
+                "pool address is zero".to_string(),
+            ));
         }
         let mut full_calldata: Vec<Felt> = proof
             .to_calldata()
@@ -421,6 +452,39 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         };
 
         execute_with_retry(&self.account, call, self.retry.clone()).await
+    }
+
+    pub async fn wait_for_transaction_success(&self, tx_hash: TxHash) -> Result<(), ClientError> {
+        let provider = self.account.provider();
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            match provider.get_transaction_status(tx_hash).await {
+                Ok(status) => match status {
+                    TransactionStatus::AcceptedOnL2(ExecutionResult::Succeeded)
+                    | TransactionStatus::AcceptedOnL1(ExecutionResult::Succeeded) => return Ok(()),
+                    TransactionStatus::AcceptedOnL2(ExecutionResult::Reverted { reason })
+                    | TransactionStatus::AcceptedOnL1(ExecutionResult::Reverted { reason })
+                    | TransactionStatus::PreConfirmed(ExecutionResult::Reverted { reason }) => {
+                        return Err(ClientError::Rpc(format!("transaction reverted: {reason}")));
+                    }
+                    TransactionStatus::Received
+                    | TransactionStatus::Candidate
+                    | TransactionStatus::PreConfirmed(ExecutionResult::Succeeded) => {}
+                },
+                Err(err) if attempt < TX_POLL_MAX_ATTEMPTS => {
+                    let _ = err;
+                }
+                Err(err) => return Err(ClientError::Rpc(err.to_string())),
+            }
+
+            if attempt >= TX_POLL_MAX_ATTEMPTS {
+                return Err(ClientError::Rpc(
+                    "timed out waiting for transaction acceptance".to_string(),
+                ));
+            }
+            sleep(Duration::from_millis(TX_POLL_DELAY_MS)).await;
+        }
     }
 
     pub async fn get_pool_state(&self) -> Result<(U256, i32, u128), ClientError> {
@@ -472,10 +536,8 @@ impl<A: ConnectedAccount + Sync> SwapClient<A> {
         let token1 = result[1];
         let fee = felt_to_u128(&result[2])?;
         let tick_spacing = felt_to_u128(&result[3])?;
-        let min_sqrt_ratio =
-            U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
-        let max_sqrt_ratio =
-            U256::from_words(felt_to_u128(&result[6])?, felt_to_u128(&result[7])?);
+        let min_sqrt_ratio = U256::from_words(felt_to_u128(&result[4])?, felt_to_u128(&result[5])?);
+        let max_sqrt_ratio = U256::from_words(felt_to_u128(&result[6])?, felt_to_u128(&result[7])?);
         Ok(PoolConfig {
             token0,
             token1,
@@ -564,9 +626,9 @@ pub(crate) async fn execute_with_retry<A: ConnectedAccount + Sync>(
             exec = exec.l1_gas(parsed);
         }
         if let Ok(l1_gas_price) = std::env::var("ZYLITH_L1_GAS_PRICE") {
-            let parsed = l1_gas_price
-                .parse::<u128>()
-                .map_err(|_| ClientError::InvalidInput("invalid ZYLITH_L1_GAS_PRICE".to_string()))?;
+            let parsed = l1_gas_price.parse::<u128>().map_err(|_| {
+                ClientError::InvalidInput("invalid ZYLITH_L1_GAS_PRICE".to_string())
+            })?;
             exec = exec.l1_gas_price(parsed);
         }
         if let Ok(l2_gas) = std::env::var("ZYLITH_L2_GAS") {
@@ -576,9 +638,9 @@ pub(crate) async fn execute_with_retry<A: ConnectedAccount + Sync>(
             exec = exec.l2_gas(parsed);
         }
         if let Ok(l2_gas_price) = std::env::var("ZYLITH_L2_GAS_PRICE") {
-            let parsed = l2_gas_price
-                .parse::<u128>()
-                .map_err(|_| ClientError::InvalidInput("invalid ZYLITH_L2_GAS_PRICE".to_string()))?;
+            let parsed = l2_gas_price.parse::<u128>().map_err(|_| {
+                ClientError::InvalidInput("invalid ZYLITH_L2_GAS_PRICE".to_string())
+            })?;
             exec = exec.l2_gas_price(parsed);
         }
         if let Ok(l1_data_gas) = std::env::var("ZYLITH_L1_DATA_GAS") {
@@ -588,9 +650,9 @@ pub(crate) async fn execute_with_retry<A: ConnectedAccount + Sync>(
             exec = exec.l1_data_gas(parsed);
         }
         if let Ok(l1_data_gas_price) = std::env::var("ZYLITH_L1_DATA_GAS_PRICE") {
-            let parsed = l1_data_gas_price
-                .parse::<u128>()
-                .map_err(|_| ClientError::InvalidInput("invalid ZYLITH_L1_DATA_GAS_PRICE".to_string()))?;
+            let parsed = l1_data_gas_price.parse::<u128>().map_err(|_| {
+                ClientError::InvalidInput("invalid ZYLITH_L1_DATA_GAS_PRICE".to_string())
+            })?;
             exec = exec.l1_data_gas_price(parsed);
         }
         exec.send()
@@ -632,39 +694,44 @@ pub(crate) fn serialize_merkle_proofs(proofs: &[MerklePath]) -> Result<Vec<Felt>
 
 pub(crate) fn serialize_merkle_proof(proof: &MerklePath) -> Result<Vec<Felt>, ClientError> {
     if proof.path.len() != proof.indices.len() {
-        return Err(ClientError::InvalidInput("merkle path mismatch".to_string()));
+        return Err(ClientError::InvalidInput(
+            "merkle path mismatch".to_string(),
+        ));
     }
     if proof.path.len() != generated_constants::TREE_HEIGHT {
-        return Err(ClientError::InvalidInput("merkle path length mismatch".to_string()));
+        return Err(ClientError::InvalidInput(
+            "merkle path length mismatch".to_string(),
+        ));
     }
-    let mut out = Vec::new();
-    out.push(proof.root);
-    out.push(proof.commitment);
-    out.push(Felt::from(proof.leaf_index));
-    out.push(Felt::from(proof.path.len() as u64));
+    let mut out = vec![
+        proof.root,
+        proof.commitment,
+        Felt::from(proof.leaf_index),
+        Felt::from(proof.path.len() as u64),
+    ];
     out.extend(proof.path.iter().copied());
     out.push(Felt::from(proof.indices.len() as u64));
-    out.extend(proof.indices.iter().map(|b| if *b { Felt::ONE } else { Felt::ZERO }));
+    out.extend(
+        proof
+            .indices
+            .iter()
+            .map(|b| if *b { Felt::ONE } else { Felt::ZERO }),
+    );
     Ok(out)
 }
 
 fn parse_hex_vec(values: &[String]) -> Result<Vec<Felt>, ClientError> {
     values
         .iter()
-        .map(|value| {
-            parse_felt(value)
-                .map_err(|_| ClientError::Asp("invalid felt".to_string()))
-        })
+        .map(|value| parse_felt(value).map_err(|_| ClientError::Asp("invalid felt".to_string())))
         .collect()
 }
 
-fn compute_merkle_root(
-    leaf: Felt,
-    path: &[Felt],
-    indices: &[bool],
-) -> Result<Felt, ClientError> {
+fn compute_merkle_root(leaf: Felt, path: &[Felt], indices: &[bool]) -> Result<Felt, ClientError> {
     if path.len() != indices.len() {
-        return Err(ClientError::InvalidInput("merkle path mismatch".to_string()));
+        return Err(ClientError::InvalidInput(
+            "merkle path mismatch".to_string(),
+        ));
     }
     let mut hash = leaf;
     for (sibling, is_right) in path.iter().zip(indices.iter()) {
@@ -679,7 +746,12 @@ fn compute_merkle_root(
 }
 
 async fn fetch_root_at(asp_url: &str, token: &str, index: u64) -> Result<Felt, ClientError> {
-    let url = format!("{}/root/{}?token={}", asp_url.trim_end_matches('/'), index, token);
+    let url = format!(
+        "{}/root/{}?token={}",
+        asp_url.trim_end_matches('/'),
+        index,
+        token
+    );
     let client = asp_client()?;
     let response = client
         .get(url)
@@ -723,7 +795,11 @@ fn felt_to_bool(value: &Felt) -> Result<bool, ClientError> {
 }
 
 fn bool_to_felt(value: bool) -> Felt {
-    if value { Felt::ONE } else { Felt::ZERO }
+    if value {
+        Felt::ONE
+    } else {
+        Felt::ZERO
+    }
 }
 
 fn u256_to_felts(value: &U256) -> (Felt, Felt) {
@@ -734,9 +810,11 @@ fn i32_to_felt(value: i32) -> Result<Felt, ClientError> {
     if value >= 0 {
         Ok(Felt::from(value as u64))
     } else {
-        let modulus =
-            BigUint::parse_bytes(b"800000000000011000000000000000000000000000000000000000000000001", 16)
-                .ok_or_else(|| ClientError::Crypto("invalid modulus".to_string()))?;
+        let modulus = BigUint::parse_bytes(
+            b"800000000000011000000000000000000000000000000000000000000000001",
+            16,
+        )
+        .ok_or_else(|| ClientError::Crypto("invalid modulus".to_string()))?;
         let mag = BigUint::from((-value) as u32);
         let result = modulus - mag;
         let bytes = result.to_bytes_be();
@@ -774,20 +852,33 @@ fn parse_swap_steps_quote(result: &[Felt]) -> Result<SwapStepsQuote, ClientError
     let step_len = 14;
     let expected_len = min_len + step_count * step_len;
     if result.len() != expected_len {
-        return Err(ClientError::Rpc("invalid swap steps quote length".to_string()));
+        return Err(ClientError::Rpc(
+            "invalid swap steps quote length".to_string(),
+        ));
     }
 
     let mut steps = Vec::with_capacity(step_count);
     let mut idx = min_len;
     for _ in 0..step_count {
-        let sqrt_price_next = U256::from_words(felt_to_u128(&result[idx])?, felt_to_u128(&result[idx + 1])?);
-        let sqrt_price_limit = U256::from_words(felt_to_u128(&result[idx + 2])?, felt_to_u128(&result[idx + 3])?);
+        let sqrt_price_next =
+            U256::from_words(felt_to_u128(&result[idx])?, felt_to_u128(&result[idx + 1])?);
+        let sqrt_price_limit = U256::from_words(
+            felt_to_u128(&result[idx + 2])?,
+            felt_to_u128(&result[idx + 3])?,
+        );
         let tick_next = felt_to_i32(&result[idx + 4])?;
-        let liquidity_net = U256::from_words(felt_to_u128(&result[idx + 5])?, felt_to_u128(&result[idx + 6])?);
-        let fee_growth_global_0 =
-            U256::from_words(felt_to_u128(&result[idx + 7])?, felt_to_u128(&result[idx + 8])?);
-        let fee_growth_global_1 =
-            U256::from_words(felt_to_u128(&result[idx + 9])?, felt_to_u128(&result[idx + 10])?);
+        let liquidity_net = U256::from_words(
+            felt_to_u128(&result[idx + 5])?,
+            felt_to_u128(&result[idx + 6])?,
+        );
+        let fee_growth_global_0 = U256::from_words(
+            felt_to_u128(&result[idx + 7])?,
+            felt_to_u128(&result[idx + 8])?,
+        );
+        let fee_growth_global_1 = U256::from_words(
+            felt_to_u128(&result[idx + 9])?,
+            felt_to_u128(&result[idx + 10])?,
+        );
         let amount_in = felt_to_u128(&result[idx + 11])?;
         let amount_out = felt_to_u128(&result[idx + 12])?;
         let fee_amount = felt_to_u128(&result[idx + 13])?;

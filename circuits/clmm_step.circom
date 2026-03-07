@@ -1619,7 +1619,7 @@ template ClmmStepExactOut() {
         next1.div_floor_q[q] <== next1_div_floor_q[q];
     }
     signal overflow_raw;
-    overflow_raw <== next1.overflow + zero_for_one * (next0.overflow - next1.overflow);
+    overflow_raw <== next0.overflow + zero_for_one * (next1.overflow - next0.overflow);
     overflow_raw * (overflow_raw - 1) === 0;
     signal overflow;
     overflow <== overflow_raw * normal;
@@ -1633,8 +1633,8 @@ template ClmmStepExactOut() {
     dec_next0.value <== next0.sqrt_ratio_next;
     dec_next1.value <== next1.sqrt_ratio_next;
     for (var k = 0; k < 4; k++) {
-        next_sel.a[k] <== dec_next0.limbs[k];
-        next_sel.b[k] <== dec_next1.limbs[k];
+        next_sel.a[k] <== dec_next1.limbs[k];
+        next_sel.b[k] <== dec_next0.limbs[k];
     }
 
     next_from_amount <== next_sel.out[0]
@@ -1834,4 +1834,104 @@ template ClmmStepExactOut() {
     overflow === 0;
     is_limited <== limited;
     is_overflow <== overflow;
+}
+
+template ClmmStepDir(ZERO_FOR_ONE) {
+    signal input sqrt_price_start;
+    signal input sqrt_price_limit;
+    signal input liquidity;
+    signal input amount_remaining;
+    signal input fee;
+    signal input amount_before_fee_div_q[4];
+    signal input amount0_limit_div_q[4][4];
+    signal input amount0_calc_div_q[4][4];
+    signal input amount0_out_div_q[4][4];
+    signal input next0_div_floor_q[4];
+    signal input next0_div_ceil_q[4];
+    signal input next1_div_floor_q[4];
+
+    signal output sqrt_price_next;
+    signal output amount_in;
+    signal output amount_out;
+    signal output fee_amount;
+    signal output is_limited;
+    signal output is_overflow;
+
+    component inner = ClmmStep();
+    inner.sqrt_price_start <== sqrt_price_start;
+    inner.sqrt_price_limit <== sqrt_price_limit;
+    inner.liquidity <== liquidity;
+    inner.amount_remaining <== amount_remaining;
+    inner.fee <== fee;
+    inner.zero_for_one <== ZERO_FOR_ONE;
+
+    for (var i = 0; i < 4; i++) {
+        inner.amount_before_fee_div_q[i] <== amount_before_fee_div_q[i];
+        inner.next0_div_floor_q[i] <== next0_div_floor_q[i];
+        inner.next0_div_ceil_q[i] <== next0_div_ceil_q[i];
+        inner.next1_div_floor_q[i] <== next1_div_floor_q[i];
+    }
+    for (var j = 0; j < 4; j++) {
+        for (var k = 0; k < 4; k++) {
+            inner.amount0_limit_div_q[j][k] <== amount0_limit_div_q[j][k];
+            inner.amount0_calc_div_q[j][k] <== amount0_calc_div_q[j][k];
+            inner.amount0_out_div_q[j][k] <== amount0_out_div_q[j][k];
+        }
+    }
+
+    sqrt_price_next <== inner.sqrt_price_next;
+    amount_in <== inner.amount_in;
+    amount_out <== inner.amount_out;
+    fee_amount <== inner.fee_amount;
+    is_limited <== inner.is_limited;
+    is_overflow <== inner.is_overflow;
+}
+
+template ClmmStepExactOutDir(ZERO_FOR_ONE) {
+    signal input sqrt_price_start;
+    signal input sqrt_price_limit;
+    signal input liquidity;
+    signal input amount_remaining;
+    signal input fee;
+    signal input amount_before_fee_div_q[4];
+    signal input amount0_limit_div_q[4][4];
+    signal input amount0_calc_div_q[4][4];
+    signal input amount0_out_div_q[4][4];
+    signal input next0_div_ceil_q[4];
+    signal input next1_div_floor_q[4];
+
+    signal output sqrt_price_next;
+    signal output amount_in;
+    signal output amount_out;
+    signal output fee_amount;
+    signal output is_limited;
+    signal output is_overflow;
+
+    component inner = ClmmStepExactOut();
+    inner.sqrt_price_start <== sqrt_price_start;
+    inner.sqrt_price_limit <== sqrt_price_limit;
+    inner.liquidity <== liquidity;
+    inner.amount_remaining <== amount_remaining;
+    inner.fee <== fee;
+    inner.zero_for_one <== ZERO_FOR_ONE;
+
+    for (var i = 0; i < 4; i++) {
+        inner.amount_before_fee_div_q[i] <== amount_before_fee_div_q[i];
+        inner.next0_div_ceil_q[i] <== next0_div_ceil_q[i];
+        inner.next1_div_floor_q[i] <== next1_div_floor_q[i];
+    }
+    for (var j = 0; j < 4; j++) {
+        for (var k = 0; k < 4; k++) {
+            inner.amount0_limit_div_q[j][k] <== amount0_limit_div_q[j][k];
+            inner.amount0_calc_div_q[j][k] <== amount0_calc_div_q[j][k];
+            inner.amount0_out_div_q[j][k] <== amount0_out_div_q[j][k];
+        }
+    }
+
+    sqrt_price_next <== inner.sqrt_price_next;
+    amount_in <== inner.amount_in;
+    amount_out <== inner.amount_out;
+    fee_amount <== inner.fee_amount;
+    is_limited <== inner.is_limited;
+    is_overflow <== inner.is_overflow;
 }
