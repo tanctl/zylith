@@ -409,13 +409,53 @@ impl Storage {
         Ok(None)
     }
 
-    pub async fn get_latest_leaf_count(&self, token: &str) -> Result<Option<u64>, StorageError> {
+    pub async fn get_latest_known_leaf_count(
+        &self,
+        token: &str,
+    ) -> Result<Option<u64>, StorageError> {
         let row = sqlx::query(
-            "SELECT leaf_count FROM roots WHERE token = $1 ORDER BY root_index DESC LIMIT 1",
+            "SELECT leaf_count FROM roots \
+             WHERE token = $1 AND leaf_count > 0 \
+             ORDER BY root_index DESC LIMIT 1",
         )
         .bind(token)
         .fetch_optional(&self.pool)
         .await?;
+        if let Some(row) = row {
+            let leaf_count: i64 = row.try_get("leaf_count")?;
+            return Ok(Some(leaf_count as u64));
+        }
+        Ok(None)
+    }
+
+    pub async fn get_latest_known_leaf_count_before_root(
+        &self,
+        token: &str,
+        root_index: u64,
+        max_block: Option<u64>,
+    ) -> Result<Option<u64>, StorageError> {
+        let row = if let Some(max_block) = max_block {
+            sqlx::query(
+                "SELECT leaf_count FROM roots \
+                 WHERE token = $1 AND leaf_count > 0 AND root_index < $2 AND block_number <= $3 \
+                 ORDER BY root_index DESC LIMIT 1",
+            )
+            .bind(token)
+            .bind(root_index as i64)
+            .bind(max_block as i64)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT leaf_count FROM roots \
+                 WHERE token = $1 AND leaf_count > 0 AND root_index < $2 \
+                 ORDER BY root_index DESC LIMIT 1",
+            )
+            .bind(token)
+            .bind(root_index as i64)
+            .fetch_optional(&self.pool)
+            .await?
+        };
         if let Some(row) = row {
             let leaf_count: i64 = row.try_get("leaf_count")?;
             return Ok(Some(leaf_count as u64));

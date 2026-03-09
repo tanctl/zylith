@@ -323,7 +323,7 @@ impl IndexerService {
         let token_hex = felt_to_hex(&token);
         let last_flushed = self
             .storage
-            .get_latest_leaf_count(&token_hex)
+            .get_latest_known_leaf_count(&token_hex)
             .await?
             .unwrap_or(0);
         let (leaf_count, expected_root) = {
@@ -491,7 +491,7 @@ impl IndexerService {
         let token_hex = "position".to_string();
         let last_flushed = self
             .storage
-            .get_latest_leaf_count(&token_hex)
+            .get_latest_known_leaf_count(&token_hex)
             .await?
             .unwrap_or(0);
         let (leaf_count, expected_root) = {

@@ -23,10 +23,15 @@ import {
   zylithConfig,
 } from "../lib/zylith";
 import {
+  abortVaultOperation,
+  bindVaultOperationTx,
+  clearVaultOperationsByTx,
   createTokenNote,
   generateSecretHex,
   loadVaultNotes,
+  stageVaultOperation,
   upsertVaultNotes,
+  type PendingVaultOperation,
   type TokenNote,
   type VaultNote,
 } from "../lib/vault";
@@ -190,15 +195,24 @@ export default function SwapPage() {
   const debouncedFromAmount = useDebounce(fromAmount, QUOTE_DEBOUNCE_MS);
   const quoteAbortRef = useRef<AbortController | null>(null);
   const vaultWriteQueue = useRef<Promise<VaultNote[] | null>>(Promise.resolve(null));
+  const vaultScope = useMemo(() => {
+    if (!wallet.address || !wallet.chainId) {
+      return null;
+    }
+    return {
+      address: wallet.address,
+      chainId: wallet.chainId,
+    };
+  }, [wallet.address, wallet.chainId]);
 
   useEffect(() => {
-    if (!wallet.vaultKey) {
+    if (!wallet.vaultKey || !vaultScope) {
       setVaultNotes([]);
       setNotesLoaded(false);
       return;
     }
     let cancelled = false;
-    loadVaultNotes(wallet.vaultKey)
+    loadVaultNotes(vaultScope, wallet.vaultKey)
       .then((notes) => {
         if (!cancelled) {
           setVaultNotes(notes);
@@ -217,7 +231,7 @@ export default function SwapPage() {
     return () => {
       cancelled = true;
     };
-  }, [wallet.vaultKey, wallet.vaultRevision, wallet.reportVaultError]);
+  }, [vaultScope, wallet.vaultKey, wallet.vaultRevision, wallet.reportVaultError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -473,12 +487,12 @@ export default function SwapPage() {
   const persistVaultNotes = async (
     updater: (notes: VaultNote[]) => VaultNote[],
   ) => {
-    if (!wallet.vaultKey) {
+    if (!wallet.vaultKey || !vaultScope) {
       throw new Error("Vault not ready");
     }
     const task = async () => {
       try {
-        const next = await upsertVaultNotes(wallet.vaultKey, updater);
+        const next = await upsertVaultNotes(vaultScope, wallet.vaultKey, updater);
         setVaultNotes(next);
         return next;
       } catch (err) {
@@ -496,6 +510,42 @@ export default function SwapPage() {
     return nextPromise;
   };
 
+  const submitVaultOperation = async (
+    operation: PendingVaultOperation,
+    send: () => Promise<{ transaction_hash: string }>,
+  ): Promise<string> => {
+    if (!wallet.vaultKey || !vaultScope) {
+      throw new Error("Vault not ready");
+    }
+    const stagedNotes = await stageVaultOperation(vaultScope, wallet.vaultKey, operation);
+    setVaultNotes(stagedNotes);
+    let transactionHash: string | null = null;
+    try {
+      const response = await send();
+      transactionHash = response.transaction_hash;
+      const boundNotes = await bindVaultOperationTx(
+        vaultScope,
+        wallet.vaultKey,
+        operation.id,
+        transactionHash,
+      );
+      setVaultNotes(boundNotes);
+      return transactionHash;
+    } catch (err) {
+      try {
+        const next = transactionHash
+          ? await loadVaultNotes(vaultScope, wallet.vaultKey)
+          : await abortVaultOperation(vaultScope, wallet.vaultKey, operation.id);
+        setVaultNotes(next);
+      } catch (vaultErr) {
+        const message =
+          vaultErr instanceof Error ? vaultErr.message : "Vault unavailable";
+        wallet.reportVaultError(message);
+      }
+      throw err;
+    }
+  };
+
   const applyPendingResolution = async (
     resolutions: Map<string, PendingResolution>,
   ) => {
@@ -503,6 +553,17 @@ export default function SwapPage() {
       return;
     }
     await persistVaultNotes((current) => resolvePendingNotes(current, resolutions));
+    if (!wallet.vaultKey || !vaultScope) {
+      return;
+    }
+    try {
+      await clearVaultOperationsByTx(vaultScope, wallet.vaultKey, resolutions.keys());
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Vault unavailable";
+      wallet.reportVaultError(message);
+      throw err;
+    }
   };
 
   const refreshPendingNotes = async () => {
@@ -646,7 +707,7 @@ export default function SwapPage() {
         result.input_proofs,
         result.output_proofs,
       );
-      const { transaction_hash } = await wallet.account.execute([call]);
+      const operationId = crypto.randomUUID();
       const pendingOutputs: TokenNote[] = [];
       if (result.output_note) {
         pendingOutputs.push(
@@ -656,7 +717,7 @@ export default function SwapPage() {
             result.output_note.secret,
             result.output_note.nullifier,
             "pending",
-            transaction_hash,
+            operationId,
             "receive",
           ),
         );
@@ -669,25 +730,19 @@ export default function SwapPage() {
             result.change_note.secret,
             result.change_note.nullifier,
             "pending",
-            transaction_hash,
+            operationId,
             "receive",
           ),
         );
       }
-      await persistVaultNotes((current) => {
-        const spentIds = new Set(selectedNotes.map((note) => note.id));
-        const next = current.map((note) =>
-          spentIds.has(note.id)
-            ? {
-              ...note,
-              state: "pending" as const,
-              pending_tx: transaction_hash,
-              pending_action: "spend" as const,
-            }
-            : note,
-        );
-        return [...next, ...pendingOutputs];
-      });
+      const transaction_hash = await submitVaultOperation(
+        {
+          id: operationId,
+          spend_note_ids: selectedNotes.map((note) => note.id),
+          receive_notes: pendingOutputs,
+        },
+        () => wallet.account.execute([call]),
+      );
 
       try {
         const receipt = await wallet.account.waitForTransaction(transaction_hash);
@@ -790,23 +845,28 @@ export default function SwapPage() {
         proofResult.proof,
         proofResult.insertion_proof,
       );
-      const { transaction_hash } = await wallet.account.execute([
-        approveCall,
-        depositCall,
-      ]);
+      const operationId = crypto.randomUUID();
       const pendingNote = createTokenNote(
         finalNote.token,
         finalNote.amount,
         finalNote.secret,
         finalNote.nullifier,
         "pending",
-        transaction_hash,
+        operationId,
         "receive",
       );
-      await persistVaultNotes((current): VaultNote[] => [
-        ...current,
-        pendingNote,
-      ]);
+      const transaction_hash = await submitVaultOperation(
+        {
+          id: operationId,
+          spend_note_ids: [],
+          receive_notes: [pendingNote],
+        },
+        () =>
+          wallet.account.execute([
+            approveCall,
+            depositCall,
+          ]),
+      );
       try {
         const receipt = await wallet.account.waitForTransaction(transaction_hash);
         const status = classifyReceiptStatus(receipt);
@@ -873,18 +933,13 @@ export default function SwapPage() {
         proofResult.proof,
         proofResult.merkle_proof,
       );
-      const { transaction_hash } = await wallet.account.execute([call]);
-      await persistVaultNotes((current) =>
-        current.map((entry) =>
-          entry.id === note.id
-            ? {
-              ...entry,
-              state: "pending" as const,
-              pending_tx: transaction_hash,
-              pending_action: "spend" as const,
-            }
-            : entry,
-        ),
+      const transaction_hash = await submitVaultOperation(
+        {
+          id: crypto.randomUUID(),
+          spend_note_ids: [note.id],
+          receive_notes: [],
+        },
+        () => wallet.account.execute([call]),
       );
       try {
         const receipt = await wallet.account.waitForTransaction(transaction_hash);

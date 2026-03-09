@@ -37,12 +37,30 @@ type VaultBlob = {
   ciphertext: string;
 };
 
-export type VaultBackup = VaultBlob;
+export type VaultScope = {
+  address: string;
+  chainId: string;
+};
+
+export type VaultBackup = VaultBlob & {
+  address: string;
+  chainId: string;
+  recovery?: VaultBlob;
+};
+
+export type PendingVaultOperation = {
+  id: string;
+  tx_hash?: string;
+  spend_note_ids: string[];
+  receive_notes: VaultNote[];
+};
 
 const DB_NAME = "zylith-vault";
 const STORE_NAME = "vault";
-const RECORD_KEY = "notes";
+const LEGACY_RECORD_KEY = "notes";
+const NOTES_PREFIX = "notes:";
 const KEY_PREFIX = "vault-key:";
+const RECOVERY_PREFIX = "zylith-vault-recovery:";
 const VAULT_VERSION = 1;
 let vaultWriteQueue: Promise<void> = Promise.resolve();
 
@@ -77,6 +95,16 @@ function writeVaultValue<T>(db: IDBDatabase, key: string, value: T): Promise<voi
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
     const request = store.put(value, key);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function deleteVaultValue(db: IDBDatabase, key: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.delete(key);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
@@ -121,6 +149,101 @@ function isCryptoKeyLike(value: unknown): value is CryptoKey {
   );
 }
 
+function isVaultBlob(value: unknown): value is VaultBlob {
+  return (
+    isObjectRecord(value) &&
+    value.version === VAULT_VERSION &&
+    typeof value.nonce === "string" &&
+    typeof value.ciphertext === "string"
+  );
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNoteState(value: unknown): value is TokenNote["state"] {
+  return value === "unspent" || value === "spent" || value === "pending";
+}
+
+function isPendingAction(value: unknown): value is NonNullable<TokenNote["pending_action"]> {
+  return value === "spend" || value === "receive";
+}
+
+function isOptionalPendingAction(value: unknown): value is TokenNote["pending_action"] {
+  return value === undefined || isPendingAction(value);
+}
+
+function isBaseVaultNote(value: unknown): value is Record<string, unknown> {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.secret === "string" &&
+    typeof value.nullifier === "string" &&
+    isNoteState(value.state) &&
+    isOptionalPendingAction(value.pending_action) &&
+    (value.pending_tx === undefined || typeof value.pending_tx === "string") &&
+    Number.isFinite(value.created_at)
+  );
+}
+
+function isTokenNote(value: unknown): value is TokenNote {
+  if (!isBaseVaultNote(value)) {
+    return false;
+  }
+  return (
+    value.type === "token" &&
+    typeof value.token === "string" &&
+    typeof value.amount === "string"
+  );
+}
+
+function isPositionNote(value: unknown): value is PositionNote {
+  if (!isBaseVaultNote(value)) {
+    return false;
+  }
+  return (
+    value.type === "position" &&
+    Number.isInteger(value.tick_lower) &&
+    Number.isInteger(value.tick_upper) &&
+    typeof value.liquidity === "string" &&
+    typeof value.fee_growth_inside_0 === "string" &&
+    typeof value.fee_growth_inside_1 === "string"
+  );
+}
+
+function isVaultNote(value: unknown): value is VaultNote {
+  return isTokenNote(value) || isPositionNote(value);
+}
+
+function assertVaultNotes(value: unknown): asserts value is VaultNote[] {
+  if (!Array.isArray(value) || !value.every(isVaultNote)) {
+    throw new Error("Invalid vault backup");
+  }
+}
+
+function isPendingVaultOperation(value: unknown): value is PendingVaultOperation {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    (value.tx_hash === undefined || typeof value.tx_hash === "string") &&
+    Array.isArray(value.spend_note_ids) &&
+    value.spend_note_ids.every((entry) => typeof entry === "string") &&
+    Array.isArray(value.receive_notes) &&
+    value.receive_notes.every(isVaultNote)
+  );
+}
+
+function assertPendingVaultOperations(value: unknown): asserts value is PendingVaultOperation[] {
+  if (!Array.isArray(value) || !value.every(isPendingVaultOperation)) {
+    throw new Error("Vault recovery storage is unavailable");
+  }
+}
+
 function enqueueVaultWrite<T>(task: () => Promise<T>): Promise<T> {
   const next = vaultWriteQueue.then(task, task);
   vaultWriteQueue = next.then(
@@ -134,7 +257,11 @@ async function encryptNotes(
   key: CryptoKey,
   notes: VaultNote[],
 ): Promise<VaultBlob> {
-  const data = new TextEncoder().encode(JSON.stringify(notes));
+  return encryptPayload(key, notes);
+}
+
+async function encryptPayload<T>(key: CryptoKey, payload: T): Promise<VaultBlob> {
+  const data = new TextEncoder().encode(JSON.stringify(payload));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce },
@@ -152,6 +279,12 @@ async function decryptNotes(
   key: CryptoKey,
   blob: VaultBlob,
 ): Promise<VaultNote[]> {
+  const notes = await decryptPayload<unknown>(key, blob);
+  assertVaultNotes(notes);
+  return notes;
+}
+
+async function decryptPayload<T>(key: CryptoKey, blob: VaultBlob): Promise<T> {
   if (blob.version !== VAULT_VERSION) {
     throw new Error("Vault format mismatch. Restore from a compatible backup.");
   }
@@ -163,36 +296,370 @@ async function decryptNotes(
     ciphertext,
   );
   const decoded = new TextDecoder().decode(plaintext);
-  return JSON.parse(decoded) as VaultNote[];
+  return JSON.parse(decoded) as T;
 }
 
-export async function loadVaultNotes(key: CryptoKey): Promise<VaultNote[]> {
-  const db = await openDb();
-  const blob = await readVaultValue<VaultBlob>(db, RECORD_KEY);
-  if (!blob) {
+function vaultNotesId(scope: VaultScope): string {
+  return `${NOTES_PREFIX}${scope.address}:${scope.chainId}`;
+}
+
+function vaultKeyId(address: string, chainId: string): string {
+  return `${KEY_PREFIX}${address}:${chainId}`;
+}
+
+function vaultRecoveryId(scope: VaultScope): string {
+  return `${RECOVERY_PREFIX}${scope.address}:${scope.chainId}`;
+}
+
+function localStorageHandle(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function noteWithPendingReceive(note: VaultNote, txRef: string): VaultNote {
+  return {
+    ...note,
+    state: "pending",
+    pending_tx: txRef,
+    pending_action: "receive",
+  };
+}
+
+function applyVaultOperation(
+  notes: VaultNote[],
+  operation: PendingVaultOperation,
+): { notes: VaultNote[]; changed: boolean } {
+  const txRef = operation.tx_hash ?? operation.id;
+  const spendIds = new Set(operation.spend_note_ids);
+  const receiveNotes = new Map(
+    operation.receive_notes.map((note) => [note.id, noteWithPendingReceive(note, txRef)]),
+  );
+  let changed = false;
+  const next = notes.map((note) => {
+    if (spendIds.has(note.id)) {
+      const pendingNote: VaultNote = {
+        ...note,
+        state: "pending",
+        pending_tx: txRef,
+        pending_action: "spend",
+      };
+      if (
+        note.state !== pendingNote.state ||
+        note.pending_tx !== pendingNote.pending_tx ||
+        note.pending_action !== pendingNote.pending_action
+      ) {
+        changed = true;
+      }
+      return pendingNote;
+    }
+    const receiveNote = receiveNotes.get(note.id);
+    if (!receiveNote) {
+      return note;
+    }
+    receiveNotes.delete(note.id);
+    if (
+      note.state !== receiveNote.state ||
+      note.pending_tx !== receiveNote.pending_tx ||
+      note.pending_action !== receiveNote.pending_action
+    ) {
+      changed = true;
+    }
+    return receiveNote;
+  });
+  for (const receiveNote of receiveNotes.values()) {
+    next.push(receiveNote);
+    changed = true;
+  }
+  return { notes: next, changed };
+}
+
+function revertVaultOperation(
+  notes: VaultNote[],
+  operation: PendingVaultOperation,
+): { notes: VaultNote[]; changed: boolean } {
+  const receiveIds = new Set(operation.receive_notes.map((note) => note.id));
+  let changed = false;
+  const next: VaultNote[] = [];
+  for (const note of notes) {
+    if (
+      receiveIds.has(note.id) &&
+      note.state === "pending" &&
+      note.pending_tx === operation.id &&
+      note.pending_action === "receive"
+    ) {
+      changed = true;
+      continue;
+    }
+    if (
+      note.state === "pending" &&
+      note.pending_tx === operation.id &&
+      note.pending_action === "spend"
+    ) {
+      next.push({
+        ...note,
+        state: "unspent",
+        pending_tx: undefined,
+        pending_action: undefined,
+      });
+      changed = true;
+      continue;
+    }
+    next.push(note);
+  }
+  return { notes: next, changed };
+}
+
+async function loadPendingVaultOperations(
+  scope: VaultScope,
+  key: CryptoKey,
+): Promise<PendingVaultOperation[]> {
+  const storage = localStorageHandle();
+  if (!storage) {
     return [];
   }
-  return decryptNotes(key, blob);
+  const raw = storage.getItem(vaultRecoveryId(scope));
+  if (!raw) {
+    return [];
+  }
+  let blob: VaultBlob;
+  try {
+    blob = JSON.parse(raw) as VaultBlob;
+  } catch {
+    throw new Error("Vault recovery storage is unavailable");
+  }
+  try {
+    const operations = await decryptPayload<unknown>(key, blob);
+    assertPendingVaultOperations(operations);
+    return operations;
+  } catch {
+    throw new Error("Vault recovery storage is unavailable");
+  }
 }
 
-export async function saveVaultNotes(
+async function decryptPendingVaultOperations(
+  key: CryptoKey,
+  blob: VaultBlob,
+): Promise<PendingVaultOperation[]> {
+  const operations = await decryptPayload<unknown>(key, blob);
+  assertPendingVaultOperations(operations);
+  return operations;
+}
+
+async function savePendingVaultOperations(
+  scope: VaultScope,
+  key: CryptoKey,
+  operations: PendingVaultOperation[],
+): Promise<void> {
+  const storage = localStorageHandle();
+  if (!storage) {
+    throw new Error("Vault recovery storage is unavailable");
+  }
+  if (operations.length === 0) {
+    storage.removeItem(vaultRecoveryId(scope));
+    return;
+  }
+  const blob = await encryptPayload(key, operations);
+  storage.setItem(vaultRecoveryId(scope), JSON.stringify(blob));
+}
+
+async function reconcileVaultOperations(
+  scope: VaultScope,
+  key: CryptoKey,
+  notes: VaultNote[],
+): Promise<VaultNote[]> {
+  const operations = await loadPendingVaultOperations(scope, key);
+  if (operations.length === 0) {
+    return notes;
+  }
+  let next = notes;
+  let changed = false;
+  let pruned = false;
+  const activeOperations: PendingVaultOperation[] = [];
+  for (const operation of operations) {
+    const isTracked = next.some(
+      (note) =>
+        note.state === "pending" &&
+        (note.pending_tx === operation.id ||
+          (operation.tx_hash !== undefined && note.pending_tx === operation.tx_hash)),
+    );
+    if (!isTracked) {
+      if (operation.tx_hash === undefined) {
+        activeOperations.push(operation);
+        const applied = applyVaultOperation(next, operation);
+        next = applied.notes;
+        changed = changed || applied.changed;
+        continue;
+      }
+      pruned = true;
+      continue;
+    }
+    activeOperations.push(operation);
+    const applied = applyVaultOperation(next, operation);
+    next = applied.notes;
+    changed = changed || applied.changed;
+  }
+  if (pruned) {
+    await savePendingVaultOperations(scope, key, activeOperations);
+  }
+  if (changed) {
+    await saveVaultNotesUnsafe(scope, key, next);
+  }
+  return next;
+}
+
+async function loadVaultNotesUnsafe(
+  scope: VaultScope,
+  key: CryptoKey,
+): Promise<VaultNote[]> {
+  const db = await openDb();
+  const blob = await readVaultValue<VaultBlob>(db, vaultNotesId(scope));
+  let notes: VaultNote[] = [];
+  if (blob) {
+    try {
+      notes = await decryptNotes(key, blob);
+    } catch {
+      throw new Error("Vault storage is unavailable");
+    }
+  } else {
+    const legacyBlob = await readVaultValue<VaultBlob>(db, LEGACY_RECORD_KEY);
+    if (legacyBlob) {
+      try {
+        notes = await decryptNotes(key, legacyBlob);
+        await writeVaultValue(db, vaultNotesId(scope), legacyBlob);
+      } catch {
+        notes = [];
+      }
+    }
+  }
+  return reconcileVaultOperations(scope, key, notes);
+}
+
+async function saveVaultNotesUnsafe(
+  scope: VaultScope,
   key: CryptoKey,
   notes: VaultNote[],
 ): Promise<void> {
   const db = await openDb();
   const blob = await encryptNotes(key, notes);
-  await writeVaultValue(db, RECORD_KEY, blob);
+  await writeVaultValue(db, vaultNotesId(scope), blob);
 }
 
-export async function upsertVaultNotes(
+async function upsertVaultNotesUnsafe(
+  scope: VaultScope,
   key: CryptoKey,
   updater: (notes: VaultNote[]) => VaultNote[],
 ): Promise<VaultNote[]> {
+  const current = await loadVaultNotesUnsafe(scope, key);
+  const next = updater(current);
+  await saveVaultNotesUnsafe(scope, key, next);
+  return next;
+}
+
+export async function loadVaultNotes(
+  scope: VaultScope,
+  key: CryptoKey,
+): Promise<VaultNote[]> {
+  return enqueueVaultWrite(() => loadVaultNotesUnsafe(scope, key));
+}
+
+export async function saveVaultNotes(
+  scope: VaultScope,
+  key: CryptoKey,
+  notes: VaultNote[],
+): Promise<void> {
+  return enqueueVaultWrite(() => saveVaultNotesUnsafe(scope, key, notes));
+}
+
+export async function upsertVaultNotes(
+  scope: VaultScope,
+  key: CryptoKey,
+  updater: (notes: VaultNote[]) => VaultNote[],
+): Promise<VaultNote[]> {
+  return enqueueVaultWrite(() => upsertVaultNotesUnsafe(scope, key, updater));
+}
+
+export async function stageVaultOperation(
+  scope: VaultScope,
+  key: CryptoKey,
+  operation: PendingVaultOperation,
+): Promise<VaultNote[]> {
   return enqueueVaultWrite(async () => {
-    const current = await loadVaultNotes(key);
-    const next = updater(current);
-    await saveVaultNotes(key, next);
-    return next;
+    const operations = await loadPendingVaultOperations(scope, key);
+    const nextOperations = operations.filter((entry) => entry.id !== operation.id);
+    nextOperations.push({
+      ...operation,
+      tx_hash: operation.tx_hash,
+    });
+    await savePendingVaultOperations(scope, key, nextOperations);
+    try {
+      return await upsertVaultNotesUnsafe(
+        scope,
+        key,
+        (notes) => applyVaultOperation(notes, operation).notes,
+      );
+    } catch (err) {
+      await savePendingVaultOperations(scope, key, operations);
+      throw err;
+    }
+  });
+}
+
+export async function bindVaultOperationTx(
+  scope: VaultScope,
+  key: CryptoKey,
+  operationId: string,
+  txHash: string,
+): Promise<VaultNote[]> {
+  return enqueueVaultWrite(async () => {
+    const operations = await loadPendingVaultOperations(scope, key);
+    const nextOperations = operations.map((entry) =>
+      entry.id === operationId ? { ...entry, tx_hash: txHash } : entry,
+    );
+    await savePendingVaultOperations(scope, key, nextOperations);
+    const operation = nextOperations.find((entry) => entry.id === operationId);
+    if (!operation) {
+      throw new Error("Vault recovery operation not found");
+    }
+    return upsertVaultNotesUnsafe(scope, key, (notes) => applyVaultOperation(notes, operation).notes);
+  });
+}
+
+export async function abortVaultOperation(
+  scope: VaultScope,
+  key: CryptoKey,
+  operationId: string,
+): Promise<VaultNote[]> {
+  return enqueueVaultWrite(async () => {
+    const operations = await loadPendingVaultOperations(scope, key);
+    const operation = operations.find((entry) => entry.id === operationId);
+    if (!operation) {
+      return loadVaultNotesUnsafe(scope, key);
+    }
+    const nextOperations = operations.filter((entry) => entry.id !== operationId);
+    await savePendingVaultOperations(scope, key, nextOperations);
+    return upsertVaultNotesUnsafe(scope, key, (notes) => revertVaultOperation(notes, operation).notes);
+  });
+}
+
+export async function clearVaultOperationsByTx(
+  scope: VaultScope,
+  key: CryptoKey,
+  txHashes: Iterable<string>,
+): Promise<void> {
+  return enqueueVaultWrite(async () => {
+    const hashes = new Set(txHashes);
+    if (hashes.size === 0) {
+      return;
+    }
+    const operations = await loadPendingVaultOperations(scope, key);
+    const nextOperations = operations.filter((entry) => !entry.tx_hash || !hashes.has(entry.tx_hash));
+    if (nextOperations.length === operations.length) {
+      return;
+    }
+    await savePendingVaultOperations(scope, key, nextOperations);
   });
 }
 
@@ -237,21 +704,75 @@ export function generateSecretHex(): string {
     .join("")}`;
 }
 
-export async function exportVaultBackup(): Promise<VaultBackup | null> {
-  const db = await openDb();
-  return readVaultValue<VaultBlob>(db, RECORD_KEY);
+export async function exportVaultBackup(
+  scope: VaultScope,
+  key: CryptoKey,
+): Promise<VaultBackup | null> {
+  return enqueueVaultWrite(async () => {
+    const notes = await loadVaultNotesUnsafe(scope, key);
+    if (notes.length === 0) {
+      return null;
+    }
+    const backup = await encryptNotes(key, notes);
+    const operations = await loadPendingVaultOperations(scope, key);
+    const recovery =
+      operations.length > 0 ? await encryptPayload(key, operations) : undefined;
+    return {
+      ...backup,
+      address: scope.address,
+      chainId: scope.chainId,
+      recovery,
+    };
+  });
 }
 
-export async function importVaultBackup(backup: VaultBackup): Promise<void> {
-  if (!backup || backup.version !== VAULT_VERSION) {
+export async function importVaultBackup(
+  scope: VaultScope,
+  key: CryptoKey,
+  backup: VaultBackup | VaultBlob,
+): Promise<void> {
+  const scopedBackup = backup as Partial<VaultBackup>;
+  if (
+    !isVaultBlob(backup) ||
+    (scopedBackup.address !== undefined && scopedBackup.address !== scope.address) ||
+    (scopedBackup.chainId !== undefined && scopedBackup.chainId !== scope.chainId) ||
+    (scopedBackup.recovery !== undefined && !isVaultBlob(scopedBackup.recovery))
+  ) {
     throw new Error("Invalid vault backup");
   }
-  const db = await openDb();
-  await writeVaultValue(db, RECORD_KEY, backup);
-}
-
-function vaultKeyId(address: string, chainId: string): string {
-  return `${KEY_PREFIX}${address}:${chainId}`;
+  let notes: VaultNote[];
+  let recoveryOperations: PendingVaultOperation[];
+  try {
+    notes = await decryptNotes(key, backup);
+    recoveryOperations =
+      scopedBackup.recovery !== undefined
+        ? await decryptPendingVaultOperations(key, scopedBackup.recovery)
+        : [];
+  } catch (err) {
+    if (err instanceof Error && err.message === "Invalid vault backup") {
+      throw err;
+    }
+    throw new Error("Invalid vault backup");
+  }
+  return enqueueVaultWrite(async () => {
+    const operations = await loadPendingVaultOperations(scope, key);
+    if (operations.length !== 0) {
+      throw new Error("Resolve pending vault operations before importing a backup");
+    }
+    const db = await openDb();
+    const previousBlob = await readVaultValue<VaultBlob>(db, vaultNotesId(scope));
+    await saveVaultNotesUnsafe(scope, key, notes);
+    try {
+      await savePendingVaultOperations(scope, key, recoveryOperations);
+    } catch (err) {
+      if (previousBlob) {
+        await writeVaultValue(db, vaultNotesId(scope), previousBlob);
+      } else {
+        await deleteVaultValue(db, vaultNotesId(scope));
+      }
+      throw err;
+    }
+  });
 }
 
 export async function loadVaultKey(

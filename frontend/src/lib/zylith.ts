@@ -172,14 +172,24 @@ export function parseUnits(input: string, decimals = TOKEN_DECIMALS): bigint {
   if (!normalized) {
     throw new Error("Amount is required");
   }
+  if (normalized.startsWith("-")) {
+    throw new Error("Amount must be greater than zero");
+  }
   if (normalized.startsWith("0x")) {
     const value = BigInt(normalized);
+    if (value < BigInt(0)) {
+      throw new Error("Amount must be greater than zero");
+    }
     if (value > U128_MAX) {
       throw new Error("Amount exceeds max u128");
     }
     return value;
   }
-  const [wholeRaw, fraction = ""] = normalized.split(".");
+  const decimal = normalized.startsWith(".") ? `0${normalized}` : normalized;
+  if (!/^(\d+(\.\d+)?|\.\d+)$/.test(decimal)) {
+    throw new Error("Invalid amount");
+  }
+  const [wholeRaw, fraction = ""] = decimal.split(".");
   if (fraction.length > decimals) {
     throw new Error(`Too many decimal places (max ${decimals})`);
   }
@@ -187,6 +197,9 @@ export function parseUnits(input: string, decimals = TOKEN_DECIMALS): bigint {
   const frac = fraction.padEnd(decimals, "0").slice(0, decimals);
   const combined = `${whole}${frac}`;
   const value = BigInt(combined);
+  if (value < BigInt(0)) {
+    throw new Error("Amount must be greater than zero");
+  }
   if (value > U128_MAX) {
     throw new Error("Amount exceeds max u128");
   }

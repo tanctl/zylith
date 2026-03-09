@@ -559,12 +559,14 @@ async fn resolve_leaf_count_for_root_hash(
     max_block: u64,
     enforce_block: bool,
 ) -> Result<Option<u64>, StatusCode> {
+    let mut stored_root_index: Option<u64> = None;
     if enforce_block {
         let stored = storage
             .get_root_by_hash_with_block(token, root_hash)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if let Some((root_index, leaf_count, block_number)) = stored {
+            stored_root_index = Some(root_index);
             if block_number > max_block {
                 return Ok(None);
             }
@@ -578,6 +580,7 @@ async fn resolve_leaf_count_for_root_hash(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if let Some((root_index, leaf_count)) = stored {
+            stored_root_index = Some(root_index);
             if leaf_count != 0 || root_index == 0 {
                 return Ok(Some(leaf_count));
             }
@@ -589,11 +592,23 @@ async fn resolve_leaf_count_for_root_hash(
         return Ok(Some(tree.next_index()));
     }
 
-    let last_flushed = storage
-        .get_latest_leaf_count(token)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .unwrap_or(0);
+    let last_flushed = if let Some(root_index) = stored_root_index {
+        storage
+            .get_latest_known_leaf_count_before_root(
+                token,
+                root_index,
+                if enforce_block { Some(max_block) } else { None },
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .unwrap_or(0)
+    } else {
+        storage
+            .get_latest_known_leaf_count(token)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .unwrap_or(0)
+    };
     let current_leaf_count = tree.next_index();
     let pending = current_leaf_count.saturating_sub(last_flushed);
     if pending > MAX_ROOT_LOOKUP_STEPS {

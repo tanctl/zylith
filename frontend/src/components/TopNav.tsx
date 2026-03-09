@@ -18,6 +18,13 @@ export default function TopNav() {
   const [backupPending, setBackupPending] = useState(false);
   const [backupError, setBackupError] = useState("");
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const vaultScope =
+    wallet.address && wallet.chainId
+      ? {
+        address: wallet.address,
+        chainId: wallet.chainId,
+      }
+      : null;
 
   useEffect(() => {
     if (!walletMenuOpen) {
@@ -39,13 +46,13 @@ export default function TopNav() {
 
   const handleExportVault = useCallback(async () => {
     setBackupError("");
-    if (!wallet.vaultKey) {
+    if (!wallet.vaultKey || !vaultScope) {
       setBackupError("Connect your wallet");
       return;
     }
     try {
       setBackupPending(true);
-      const backup = await exportVaultBackup();
+      const backup = await exportVaultBackup(vaultScope, wallet.vaultKey);
       if (!backup) {
         throw new Error("Vault is empty");
       }
@@ -63,12 +70,12 @@ export default function TopNav() {
     } finally {
       setBackupPending(false);
     }
-  }, [wallet.address, wallet.vaultKey]);
+  }, [vaultScope, wallet.address, wallet.vaultKey]);
 
   const handleImportVault = useCallback(
     async (file: File) => {
       setBackupError("");
-      if (!wallet.vaultKey) {
+      if (!wallet.vaultKey || !vaultScope) {
         setBackupError("Connect your wallet");
         return;
       }
@@ -76,7 +83,7 @@ export default function TopNav() {
         setBackupPending(true);
         const text = await file.text();
         const parsed = JSON.parse(text) as VaultBackup;
-        await importVaultBackup(parsed);
+        await importVaultBackup(vaultScope, wallet.vaultKey, parsed);
         wallet.bumpVaultRevision();
       } catch (err) {
         setBackupError(err instanceof Error ? err.message : "Import failed");
@@ -84,7 +91,7 @@ export default function TopNav() {
         setBackupPending(false);
       }
     },
-    [wallet],
+    [vaultScope, wallet],
   );
 
   return (

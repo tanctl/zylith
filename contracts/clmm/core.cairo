@@ -294,6 +294,7 @@ pub mod Core {
             liquidity_delta: i129,
             is_upper: bool,
             tick_spacing: u128,
+            fees_snapshot: FeesPerLiquidity,
         ) {
             let liquidity_delta_current = self.tick_liquidity_delta.entry(index).read();
 
@@ -317,6 +318,17 @@ pub mod Core {
                 if (next_liquidity_net == 0) {
                     self.remove_initialized_tick(index, tick_spacing);
                 } else {
+                    let price = self.pool_price.read();
+                    self
+                        .tick_fees_outside
+                        .write(
+                            index,
+                            if index <= price.tick {
+                                fees_snapshot
+                            } else {
+                                Zero::zero()
+                            },
+                        );
                     self.insert_initialized_tick(index, tick_spacing);
                 }
             };
@@ -638,6 +650,9 @@ pub mod Core {
 
             let price = self.pool_price.read();
             let fees_current = self.pool_fees.read();
+            let fees_next = FeesPerLiquidity {
+                value0: fee_growth_global_0, value1: fee_growth_global_1,
+            };
             assert(fee_growth_global_0 >= fees_current.value0, 'FEE0_REGRESSION');
             assert(fee_growth_global_1 >= fees_current.value1, 'FEE1_REGRESSION');
             // allow min_tick - 1 after crossing the minimum price boundary (ekubo behavior)
@@ -645,8 +660,14 @@ pub mod Core {
             assert(price.tick >= min_tick_minus_one, 'TICK_BELOW_MIN');
             assert(price.tick <= max_tick(), 'TICK_ABOVE_MAX');
 
-            self.update_tick(tick_lower_i129, liquidity_delta_i129, false, tick_spacing);
-            self.update_tick(tick_upper_i129, liquidity_delta_i129, true, tick_spacing);
+            self
+                .update_tick(
+                    tick_lower_i129, liquidity_delta_i129, false, tick_spacing, fees_next,
+                );
+            self
+                .update_tick(
+                    tick_upper_i129, liquidity_delta_i129, true, tick_spacing, fees_next,
+                );
 
             if ((price.tick >= tick_lower_i129) & (price.tick < tick_upper_i129)) {
                 let liq = self.pool_liquidity.read();
@@ -1060,11 +1081,19 @@ pub mod Core {
 
             self
                 .update_tick(
-                    params.bounds.lower, liquidity_delta_i129, false, pool_key.tick_spacing,
+                    params.bounds.lower,
+                    liquidity_delta_i129,
+                    false,
+                    pool_key.tick_spacing,
+                    self.pool_fees.read(),
                 );
             self
                 .update_tick(
-                    params.bounds.upper, liquidity_delta_i129, true, pool_key.tick_spacing,
+                    params.bounds.upper,
+                    liquidity_delta_i129,
+                    true,
+                    pool_key.tick_spacing,
+                    self.pool_fees.read(),
                 );
 
             // update pool liquidity if it changed
